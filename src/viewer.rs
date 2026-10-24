@@ -260,6 +260,11 @@ impl eframe::App for Viewer {
                 self.controls = self.applied.clone().unwrap_or(self.controls.clone());
             }
         }
+        if self.applied.is_none() {
+            // The scene's settings could not be applied; nothing to render.
+            egui::CentralPanel::default().show(ui, |ui| ui.label(&self.status));
+            return;
+        }
         let frames = self.renderer.frames();
         if frames < MAX_FRAMES {
             // At most two frames in flight: keeps input latency low and the timing honest.

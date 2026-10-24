@@ -19,6 +19,8 @@ const LIGHT_BOUNDS_G: u32 = 128;
 const LIGHT_BOUNDS_BASE: usize = 2048;
 const MAX_BOUNDS_NODES: usize = 512;
 const MAX_BINS: usize = 32;
+/// Upper bound on ghost workgroups (16×16 ray tiles) per frame.
+const GHOST_TASK_BUDGET: usize = 65536;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
@@ -193,6 +195,7 @@ pub struct GpuRenderer {
     jobs_cap: usize,
     static_bufs: Option<[wgpu::Buffer; 4]>,
     film_buf: Option<wgpu::Buffer>,
+    film_dims: Option<(usize, usize, usize)>,
     lowres_buf: Option<wgpu::Buffer>,
     spectral_buf: Option<wgpu::Buffer>,
     texture: Option<wgpu::Texture>,
@@ -213,6 +216,8 @@ pub struct GpuRenderer {
     scene_lights: Vec<(crate::math::Vec3, f64)>,
     direct_grid: Vec<u32>,
     diffraction: Option<diffraction::GpuDiffraction>,
+    /// Kernel configuration the GPU could not handle (too large a transform).
+    diffraction_unsupported: Option<diffraction::KernelKey>,
 }
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
@@ -369,6 +374,7 @@ impl GpuRenderer {
             jobs_cap,
             static_bufs: None,
             film_buf: None,
+            film_dims: None,
             lowres_buf: None,
             spectral_buf: None,
             texture: None,
@@ -386,6 +392,7 @@ impl GpuRenderer {
             scene_lights: Vec::new(),
             direct_grid: Vec::new(),
             diffraction: None,
+            diffraction_unsupported: None,
             ctx,
         }
     }
@@ -573,9 +580,14 @@ impl GpuRenderer {
         ];
 
         // Film and output, reallocated on size change.
-        let same_size = self.settings.as_ref().is_some_and(|o| o.w == s.w && o.h == s.h && o.bins == s.bins);
-        if !same_size || self.film_buf.is_none() {
+        if self.film_dims != Some((s.w, s.h, s.bins)) {
             let size = (s.w * s.h * s.bins * 4) as u64;
+            if size > device.limits().max_storage_buffer_binding_size as u64 {
+                bail!("film of {}×{}×{} exceeds the GPU's storage buffer limit", s.w, s.h, s.bins);
+            }
+            // The diffraction commands are bound to the old spectral buffer.
+            self.diffraction = None;
+            self.film_dims = Some((s.w, s.h, s.bins));
             let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
             self.film_buf = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("film"), size, usage, mapped_at_creation: false }));
             let low = ((s.w.div_ceil(4) * s.h.div_ceil(4) * s.bins * 4) as u64).max(16);
@@ -759,7 +771,14 @@ impl GpuRenderer {
         let s = self.settings.as_ref().unwrap();
         let scene = self.scene.as_ref().unwrap();
         let max_power = scene.power.iter().cloned().fold(0.0, f64::max);
-        let ghost_k = if s.ghost_wavelengths == 0 { s.bins } else { s.ghost_wavelengths.min(s.bins) };
+        let mut ghost_k = if s.ghost_wavelengths == 0 { s.bins } else { s.ghost_wavelengths.min(s.bins) };
+        // Bound the per-frame ghost work (complex lenses have hundreds of
+        // ghost paths); fewer wavelengths per frame stay unbiased.
+        let bright = scene.power.iter().filter(|p| s.ghosts && **p >= s.ghost_threshold * max_power).count();
+        let per_wavelength = bright * self.n_ghosts * ((s.light_grid / 16) * (s.light_grid / 16)) as usize;
+        if per_wavelength > 0 {
+            ghost_k = ghost_k.min((GHOST_TASK_BUDGET / per_wavelength).max(1));
+        }
         let mut tasks = Vec::new();
         for li in 0..scene.n_lights {
             let ghosts = if s.ghosts && scene.power[li] >= s.ghost_threshold * max_power { self.n_ghosts } else { 0 };
@@ -876,6 +895,9 @@ impl GpuRenderer {
         let (iris, stop_r, n_w) = self.optics.clone().context("not configured")?;
         let pitch = s.sensor_w / s.w as f64;
         let key = diffraction::KernelKey::new(s.w, s.h, s.bins, &iris, stop_r, n_w, pitch);
+        if self.diffraction_unsupported.as_ref() == Some(&key) {
+            return Ok(false);
+        }
         let d = self.diffraction.get_or_insert_with(|| diffraction::GpuDiffraction::new(&self.ctx.device, &self.ctx.queue));
         if d.is_configured(&key) {
             return Ok(true);
@@ -889,7 +911,11 @@ impl GpuRenderer {
                 (half, crate::diffraction::kernel(&spec, l, n_w, pitch, half))
             })
             .collect();
-        Ok(d.configure(key, &kernels, self.spectral_buf.as_ref().unwrap()).is_ok())
+        let ok = d.configure(key.clone(), &kernels, self.spectral_buf.as_ref().unwrap()).is_ok();
+        if !ok {
+            self.diffraction_unsupported = Some(key);
+        }
+        Ok(ok)
     }
 
     /// Normalises the film, optionally applies diffraction, and converts it
@@ -1237,5 +1263,64 @@ mod tests {
         println!("double gauss: total gpu {tg} cpu {tc}, block diff {d}");
         assert!((tg - tc).abs() / tc < 0.01);
         assert!(d < 0.03);
+    }
+
+    /// A retrofocus layout: surfaces whose centre of curvature lies between
+    /// them and the ray origin (the far root must not be taken).
+    #[test]
+    fn retrofocus_matches_cpu() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let text = "@name retrofocus test
+  60.0     2.0    1.517/64.2   14.0
+  14.0    20.0    air          11.0
+  stop     2.0    air           5.0
+  30.0     4.0    1.670/47.2    8.0
+ -30.0    30.0    air           8.0
+";
+        let mut lens = Lens::parse(text).unwrap();
+        let f = lens.max_aperture();
+        lens.set_aperture(f, 0, 0.0, 0.0).unwrap();
+        lens.sensor_z = lens.best_focus(Some(2000.0)).unwrap();
+        let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 2000.0)], lights: vec![], background: [0.05, 0.1, 0.2] };
+        let s = settings(120, 80, 8, true);
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        g.configure(&lens, &s).unwrap();
+        for _ in 0..128 {
+            g.render_frame();
+        }
+        g.resolve(false).unwrap();
+        let gpu = g.read_film().unwrap();
+        let cs = ColorSystem::new();
+        let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, 8, 1.0);
+        let mut cpu = Film::new(120, 80, 8);
+        r.render_surfaces(&mut cpu, 1024, true, false);
+        let (tg, tc) = (total(&gpu), total(&cpu));
+        println!("retrofocus: total gpu {tg} cpu {tc}, block diff {}", block_diff(&cpu, &gpu));
+        assert!(tc > 0.0 && (tg - tc).abs() / tc < 0.01);
+    }
+
+    /// One renderer reused for a second scene still applies diffraction.
+    #[test]
+    fn diffraction_after_scene_change() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let lens = lens(11.0, Some(3000.0));
+        let light = Light { center: Vec3::new(0.0, 0.0, -3000.0), radius: 5.0, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1.0 } };
+        let scene = Scene { rects: vec![], lights: vec![light], background: [0.0; 3] };
+        let s = settings(120, 80, 8, false);
+        let mut g = GpuRenderer::new(ctx);
+        for _ in 0..2 {
+            g.set_scene(&scene);
+            g.configure(&lens, &s).unwrap();
+            for _ in 0..4 {
+                g.render_frame();
+            }
+            g.resolve(false).unwrap();
+            let plain = g.read_film().unwrap();
+            assert!(g.resolve(true).unwrap());
+            let diffracted = g.read_film().unwrap();
+            let change: f64 = plain.data.iter().zip(&diffracted.data).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum();
+            assert!(change > 1e-3 * total(&plain), "diffraction had no effect");
+        }
     }
 }

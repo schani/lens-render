@@ -153,17 +153,26 @@ fn trace_path(ray: ptr<function, Ray>, l: f32, path: u32) -> f32 {
         let refl = ((ev >> 9u) & 1u) != 0u;
         let s = surf(i);
         let d = (*ray).d;
-        // Sphere through the vertex, c(x²+y²+z²) − 2z = 0, in vertex coordinates;
-        // the numerically stable root on the vertex side (also covers c = 0).
+        // Sphere through the vertex, c(x²+y²+z²) − 2z = 0, in vertex coordinates.
+        // Both roots in numerically stable form (cc/q also covers c = 0); the
+        // nearest one ahead on the vertex-side cap (c·z < 1) is the surface.
         let p0 = (*ray).o - vec3<f32>(s.dx, s.dy, s.z);
         let b = s.c * dot(p0, d) - d.z;
         let cc = s.c * dot(p0, p0) - 2.0 * p0.z;
         let disc = b * b - s.c * cc;
         if (disc < 0.0) { return -1.0; }
-        let den = -b - select(1.0, -1.0, b < 0.0) * sqrt(disc);
-        if (den == 0.0) { return -1.0; }
-        let tt = cc / den;
-        if (tt < 1e-5) { return -1.0; }
+        let q = -b - select(1.0, -1.0, b < 0.0) * sqrt(disc);
+        if (q == 0.0) { return -1.0; }
+        var tt = cc / q;
+        let ok1 = tt >= 1e-5 && s.c * (p0.z + d.z * tt) < 1.0;
+        if (s.c != 0.0) {
+            let t2 = q / s.c;
+            let ok2 = t2 >= 1e-5 && s.c * (p0.z + d.z * t2) < 1.0;
+            tt = select(select(-1.0, t2, ok2), select(tt, min(tt, t2), ok2), ok1);
+        } else if (!ok1) {
+            tt = -1.0;
+        }
+        if (tt < 0.0) { return -1.0; }
         let pl = p0 + d * tt;
         if (pl.x * pl.x + pl.y * pl.y > s.sd * s.sd) { return -1.0; }
         let p = (*ray).o + d * tt;
@@ -221,8 +230,9 @@ fn sphere_hit(li: u32, o: vec3<f32>, d: vec3<f32>) -> f32 {
     let s = scene[P.light_base + li * 3u];
     let oc = o - s.xyz;
     let b = dot(oc, d);
-    let c = dot(oc, oc) - s.w * s.w;
-    let disc = b * b - c;
+    // r² − (distance of the line from the centre)², stable for distant spheres.
+    let perp = oc - d * b;
+    let disc = s.w * s.w - dot(perp, perp);
     if (disc < 0.0) { return -1.0; }
     let t = -b - sqrt(disc);
     return select(-1.0, t, t > 1e-3);
