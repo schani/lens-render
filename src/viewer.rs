@@ -242,13 +242,22 @@ impl Viewer {
     /// new one is started if the settings changed meanwhile).
     fn poll_bank(&mut self) {
         let Some(job) = &self.bank_job else { return };
-        if let Ok(b) = job.result.try_recv() {
-            let key = job.key.clone();
-            self.bank_job = None;
-            self.bank = Some((key, Arc::new(b)));
-            if self.controls.wave {
-                self.applied = None;
+        match job.result.try_recv() {
+            Ok(b) => {
+                let key = job.key.clone();
+                self.bank_job = None;
+                self.bank = Some((key, Arc::new(b)));
+                if self.controls.wave {
+                    self.applied = None;
+                }
             }
+            // The builder panicked: stop waiting, and don't retry.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.bank_job = None;
+                self.controls.wave = false;
+                self.status = "computing PSFs failed".into();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
