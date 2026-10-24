@@ -1207,4 +1207,35 @@ mod tests {
             assert!(worst.0 < 1.0);
         }
     }
+
+    /// A second, more complex design: cemented doublets, 11 surfaces, 45 ghost paths.
+    #[test]
+    fn double_gauss_matches_cpu() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let mut lens = Lens::parse(include_str!("../../lenses/double-gauss.lens")).unwrap();
+        lens.set_aperture(2.8, 7, 0.0, 0.3).unwrap();
+        lens.sensor_z = lens.best_focus(Some(2000.0)).unwrap();
+        lens.coating = Coating::None;
+        let cs = ColorSystem::new();
+        let light = Light { center: Vec3::new(-500.0, 300.0, -4000.0), radius: 30.0, spectrum: LightSpectrum::Blackbody { t: 3500.0, scale: 1e-6 } };
+        let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 900.0)], lights: vec![light], background: [0.05, 0.1, 0.2] };
+        let s = settings(120, 80, 8, true);
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        g.configure(&lens, &s).unwrap();
+        for _ in 0..256 {
+            g.render_frame();
+        }
+        g.resolve(false).unwrap();
+        let gpu = g.read_film().unwrap();
+        let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, 8, 1.0);
+        let mut cpu = Film::new(120, 80, 8);
+        r.render_surfaces(&mut cpu, 2048, true, false);
+        r.render_lights(&mut cpu, 4_000_000, 256, 0.0, false);
+        let (tg, tc) = (total(&gpu), total(&cpu));
+        let d = block_diff(&cpu, &gpu);
+        println!("double gauss: total gpu {tg} cpu {tc}, block diff {d}");
+        assert!((tg - tc).abs() / tc < 0.01);
+        assert!(d < 0.03);
+    }
 }

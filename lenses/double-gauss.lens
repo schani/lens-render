@@ -1,0 +1,17 @@
+@name Double Gauss 50mm f/2
+# Six-element double Gauss with two cemented doublets around the stop, after
+# the pbrt-v3 "dgauss.50mm" example. Indices from that file; Abbe numbers are
+# typical for those indices (assumed). Units: mm.
+#
+# radius      thickness   material       semi-diameter
+  29.475      3.76        1.670/47.2     12.6
+  84.83       0.12        air            12.6
+  19.275      4.025       1.670/47.2     11.5
+  40.77       3.275       1.699/30.1     11.5
+  12.75       5.705       air             9.0
+  stop        4.5         air             8.55
+ -14.495      1.18        1.603/38.0      8.5
+  40.77       6.065       1.658/50.9     10.0
+ -20.385      0.19        air            10.0
+  437.065     3.22        1.717/47.9     10.0
+ -39.73       40.0        air            10.0
