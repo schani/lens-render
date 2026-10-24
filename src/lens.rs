@@ -461,6 +461,15 @@ impl Lens {
         Ok(())
     }
 
+    /// Sets the aperture, then focuses on `distance` mm (infinity if `None`):
+    /// floating elements, and the sensor `offset` mm behind best focus.
+    pub fn prepare(&mut self, fstop: f64, blades: u32, rotation_deg: f64, curvature: f64, distance: Option<f64>, offset: f64) -> Result<()> {
+        self.set_aperture(fstop, blades, rotation_deg, curvature)?;
+        self.set_floating(distance);
+        self.sensor_z = self.best_focus(distance)? + offset;
+        Ok(())
+    }
+
     // --------------------------------------------------------------- real rays
 
     /// Intersects surface `i`; returns the hit point and the surface normal.

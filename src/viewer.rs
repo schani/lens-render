@@ -6,6 +6,7 @@ use crate::math::{Ray, Vec3};
 use crate::scene::{Scene, SceneFile};
 use crate::psfbank::PsfBank;
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use eframe::egui;
@@ -18,6 +19,7 @@ const MAX_FRAMES: u32 = 1024;
 
 #[derive(Clone, PartialEq)]
 struct Controls {
+    lens: PathBuf,
     width: usize,
     fstop: f64,
     focus_m: f64,
@@ -49,7 +51,12 @@ pub struct Viewer {
     render_state: egui_wgpu::RenderState,
     texture_id: Option<egui::TextureId>,
     texture_size: (usize, usize),
+    /// The current lens file and its lens before aperture and focus are set.
+    lens_path: PathBuf,
     base_lens: Lens,
+    /// The scene's own lens (with its decentering), restored when reselected.
+    scene_lens: (PathBuf, Lens),
+    lens_files: Vec<(PathBuf, String)>,
     lens: Lens,
     scene: Scene,
     file: SceneFile,
@@ -72,7 +79,7 @@ pub struct Viewer {
 
 use eframe::egui_wgpu;
 
-pub fn run(file: SceneFile, scene: Scene, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Result<()> {
+pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0]).with_title("lens-render"),
         renderer: eframe::Renderer::Wgpu,
@@ -90,18 +97,36 @@ pub fn run(file: SceneFile, scene: Scene, lens: Lens, fstop: f64, focus_mm: Opti
         options,
         Box::new(move |cc| {
             let rs = cc.wgpu_render_state.clone().ok_or("wgpu renderer unavailable")?;
-            Ok(Box::new(Viewer::new(rs, file, scene, lens, fstop, focus_mm)))
+            Ok(Box::new(Viewer::new(rs, file, scene, lens_path, lens, fstop, focus_mm)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// `*.lens` files next to `path`, sorted, with their `@name` (or file stem).
+fn lens_files(path: &Path) -> Vec<(PathBuf, String)> {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let entries = std::fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir });
+    let mut files: Vec<PathBuf> = entries.into_iter().flatten().flatten().map(|e| dir.join(e.file_name())).filter(|p| p.extension().is_some_and(|e| e == "lens")).collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            let name = text.lines().find_map(|l| l.trim().strip_prefix("@name")).map(|n| n.trim().to_string());
+            let name = name.unwrap_or_else(|| p.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+            (p, name)
+        })
+        .collect()
+}
+
 impl Viewer {
-    fn new(rs: egui_wgpu::RenderState, file: SceneFile, scene: Scene, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Viewer {
+    fn new(rs: egui_wgpu::RenderState, file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Viewer {
         let mut renderer = GpuRenderer::new(GpuContext { device: rs.device.clone(), queue: rs.queue.clone() });
         renderer.set_scene(&scene);
         let c = &file.camera;
         let controls = Controls {
+            lens: lens_path.clone(),
             width: c.width as usize,
             fstop,
             focus_m: focus_mm.map_or(10.0, |f| f / 1000.0),
@@ -119,6 +144,9 @@ impl Viewer {
             render_state: rs,
             texture_id: None,
             texture_size: (0, 0),
+            lens_files: lens_files(&lens_path),
+            scene_lens: (lens_path.clone(), lens.clone()),
+            lens_path,
             base_lens: lens.clone(),
             lens,
             exposure_ev: c.exposure_ev,
@@ -146,13 +174,22 @@ impl Viewer {
 
     /// Rebuilds the lens for the controls and restarts accumulation.
     fn apply(&mut self) -> Result<()> {
+        // Another lens: load it and clamp the f-number to its maximum aperture.
+        let new_base = if self.controls.lens == self.lens_path {
+            None
+        } else if self.controls.lens == self.scene_lens.0 {
+            Some(self.scene_lens.1.clone())
+        } else {
+            Some(Lens::load(self.controls.lens.to_str().unwrap_or_default())?)
+        };
+        if let Some(b) = &new_base {
+            self.controls.fstop = self.controls.fstop.max(b.max_aperture());
+        }
         let k = self.controls.clone();
-        let mut lens = self.base_lens.clone();
+        let mut lens = new_base.clone().unwrap_or_else(|| self.base_lens.clone());
         lens.coating = if k.coated { Coating::Single { n: 1.38, lambda0: 550.0 } } else { Coating::None };
-        lens.set_aperture(k.fstop, k.blades, k.rotation, k.curvature)?;
         let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
-        lens.set_floating(focus);
-        lens.sensor_z = lens.best_focus(focus)? + self.file.camera.focus_offset_mm;
+        lens.prepare(k.fstop, k.blades, k.rotation, k.curvature, focus, self.file.camera.focus_offset_mm)?;
         let c = &self.file.camera;
         let settings = gpu::Settings {
             w: k.width,
@@ -184,6 +221,11 @@ impl Viewer {
             self.bank_job = Some(BankJob { key, result: rx, progress });
         }
         self.renderer.configure(&lens, &settings, bank.as_deref())?;
+        if let Some(b) = new_base {
+            self.max_aperture = b.max_aperture();
+            self.base_lens = b;
+            self.lens_path = k.lens.clone();
+        }
         self.lens = lens;
         self.applied = Some(k);
         Ok(())
@@ -236,7 +278,14 @@ impl Viewer {
 
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         let k = &mut self.controls;
-        ui.heading(&self.lens.name);
+        egui::ComboBox::from_id_salt("lens")
+            .width(ui.available_width())
+            .selected_text(egui::RichText::new(&self.lens.name).heading())
+            .show_ui(ui, |ui| {
+                for (path, name) in &self.lens_files {
+                    ui.selectable_value(&mut k.lens, path.clone(), name);
+                }
+            });
         ui.label(format!("f = {:.1} mm", self.lens.focal_length()));
         ui.separator();
         ui.add(egui::Slider::new(&mut k.fstop, self.max_aperture..=32.0).logarithmic(true).text("f-number"));
@@ -311,13 +360,21 @@ impl eframe::App for Viewer {
                     self.controls.fstop = 11.0;
                     self.controls.focus_inf = false;
                 }
+                // Another lens wide open, back to the scene's (f-number clamped), and again.
+                30 | 45 => {
+                    if let Some((p, _)) = self.lens_files.iter().rev().find(|(p, _)| *p != self.scene_lens.0) {
+                        self.controls.lens = p.clone();
+                    }
+                }
+                35 => self.controls.fstop = self.max_aperture,
+                40 => self.controls.lens = self.scene_lens.0.clone(),
                 _ => {}
             }
         }
         egui::Panel::left("controls").exact_size(300.0).show(ui, |ui| self.controls_ui(ui));
         if self.applied.as_ref() != Some(&self.controls) {
             if let Err(e) = self.apply() {
-                self.status = format!("{e}");
+                self.status = format!("{e:#}");
                 self.controls = self.applied.clone().unwrap_or(self.controls.clone());
             }
         }

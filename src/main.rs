@@ -102,8 +102,8 @@ fn main() -> Result<()> {
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
-            let Setup { file, scene, lens, fstop, focus, .. } = setup(&scene, &overrides)?;
-            viewer::run(file, scene, lens, fstop, focus)?;
+            let Setup { file, scene, lens_path, raw_lens, fstop, focus, .. } = setup(&scene, &overrides)?;
+            viewer::run(file, scene, lens_path, raw_lens, fstop, focus)?;
         }
     }
     Ok(())
@@ -114,6 +114,9 @@ struct Setup {
     file: scene::SceneFile,
     scene: scene::Scene,
     lens: lens::Lens,
+    lens_path: std::path::PathBuf,
+    /// The lens before aperture and focus are set.
+    raw_lens: lens::Lens,
     cs: spectrum::ColorSystem,
     fstop: f64,
     focus: Option<f64>,
@@ -139,7 +142,8 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     let cs = spectrum::ColorSystem::new();
     let scene = scene::Scene::build(&file, base, &cs)?;
 
-    let mut lens = lens::Lens::load(base.join(&c.lens).to_str().unwrap())?;
+    let lens_path = base.join(&c.lens);
+    let mut lens = lens::Lens::load(lens_path.to_str().unwrap())?;
     lens.coating = match c.coating.as_str() {
         "none" => lens::Coating::None,
         "single" => lens::Coating::Single { n: 1.38, lambda0: 550.0 },
@@ -148,20 +152,19 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     for d in &c.decenter {
         lens.decenter_element(d[0] as usize, d[1], d[2])?;
     }
+    let raw_lens = lens.clone();
     let fstop = c.fstop.unwrap_or_else(|| lens.max_aperture());
-    lens.set_aperture(fstop, c.iris_blades, c.iris_rotation_deg, c.iris_curvature)?;
     let focus = if c.focus_distance.is_finite() { Some(c.focus_distance * 1000.0) } else { None };
-    lens.set_floating(focus);
-    lens.sensor_z = lens.best_focus(focus)? + c.focus_offset_mm;
+    lens.prepare(fstop, c.iris_blades, c.iris_rotation_deg, c.iris_curvature, focus, c.focus_offset_mm)?;
 
     let w = c.width as usize;
     let h = (c.width as f64 * c.sensor_height_mm / c.sensor_width_mm).round() as usize;
     let norm = 4.0 * fstop * fstop / std::f64::consts::PI * 2f64.powf(c.exposure_ev);
-    Ok(Setup { file, scene, lens, cs, fstop, focus, w, h, norm })
+    Ok(Setup { file, scene, lens, lens_path, raw_lens, cs, fstop, focus, w, h, norm })
 }
 
 fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Result<()> {
-    let Setup { file, scene, lens, cs, fstop, focus, w, h, norm } = setup(scene_path, overrides)?;
+    let Setup { file, scene, lens, cs, fstop, focus, w, h, norm, .. } = setup(scene_path, overrides)?;
     let c = &file.camera;
     eprintln!(
         "{}: f = {:.2} mm, f/{:.2} (working f/{:.2}), focus {} (sensor at {:.3} mm), {}x{} px, {} spp",
