@@ -12,6 +12,8 @@ const ND: (f64, f64) = (1.40, 2.05);
 #[derive(Default)]
 pub struct GlassMap {
     dragging: bool,
+    /// The plot area last drawn.
+    plot: Option<egui::Rect>,
 }
 
 /// The surface whose following medium is the glass of the selection: the
@@ -28,6 +30,15 @@ pub fn glass_row(lens: &Lens, selected: Option<usize>) -> Option<usize> {
 }
 
 impl GlassMap {
+    /// Where `g` was plotted last.
+    pub fn position(&self, g: &Glass) -> Option<Pos2> {
+        let plot = self.plot?;
+        Some(egui::pos2(
+            plot.left() + ((g.abbe() - VD.0) / (VD.1 - VD.0)) as f32 * plot.width(),
+            plot.bottom() - ((g.nd() - ND.0) / (ND.1 - ND.0)) as f32 * plot.height(),
+        ))
+    }
+
     /// Returns true when the draft changed.
     pub fn ui(&mut self, ui: &mut egui::Ui, draft: &mut Lens, selected: Option<usize>, undo: &mut Vec<Lens>) -> bool {
         let row = glass_row(draft, selected);
@@ -45,6 +56,7 @@ impl GlassMap {
                 plot.bottom() - ((nd - ND.0) / (ND.1 - ND.0)) as f32 * plot.height(),
             )
         };
+        self.plot = Some(plot);
         let back = |p: Pos2| {
             let vd = VD.0 + (p.x - plot.left()) as f64 / plot.width() as f64 * (VD.1 - VD.0);
             let nd = ND.0 + (plot.bottom() - p.y) as f64 / plot.height() as f64 * (ND.1 - ND.0);

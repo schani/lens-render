@@ -136,6 +136,12 @@ fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
 }
 
 impl Diagram {
+    /// Where the point at height `y` on surface `i` of `shown` was drawn last.
+    pub fn point(&self, shown: &Lens, i: usize, y: f64) -> Option<Pos2> {
+        let s = shown.surfaces.get(i)?;
+        Some(self.view?.at(s.z + s.sag(y), y))
+    }
+
     /// Draws `shown` (the lens as rendered: aperture and focus set) and edits
     /// `draft` (the prescription); returns true when the draft changed.
     pub fn ui(&mut self, ui: &mut egui::Ui, shown: &Lens, draft: &mut Lens, overlays: &Overlays, half_diag: f64) -> bool {

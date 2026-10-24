@@ -1,5 +1,6 @@
 mod analysis;
 mod canvas;
+mod demo;
 mod diffraction;
 mod fieldpsf;
 mod footprint;

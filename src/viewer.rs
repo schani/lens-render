@@ -108,6 +108,11 @@ pub struct Viewer {
     /// Self-check: change controls along the way, then after this many frames
     /// screenshot the window to LENS_VIEWER_SHOT and quit.
     shot: Option<(u32, String)>,
+    /// Demo recording (LENS_VIEWER_DEMO = its directory), and the start of
+    /// the current simulated drag (phase, point).
+    demo: Option<crate::demo::Demo>,
+    demo_anchor: Option<(u8, egui::Pos2)>,
+    image_rect: egui::Rect,
     updates: u32,
 }
 
@@ -115,7 +120,10 @@ use eframe::egui_wgpu;
 
 pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0]).with_title("lens-render"),
+        // 16:9 when recording a demo.
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(if std::env::var_os("LENS_VIEWER_DEMO").is_some() { [1600.0, 900.0] } else { [1500.0, 900.0] })
+            .with_title("lens-render"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: egui_wgpu::WgpuConfiguration {
             wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
@@ -275,6 +283,15 @@ impl Viewer {
             frame_ms: 0.0,
             last_frame: Instant::now(),
             shot: std::env::var("LENS_VIEWER_SHOT").ok().map(|p| (32, p)),
+            demo: std::env::var_os("LENS_VIEWER_DEMO").and_then(|d| match crate::demo::Demo::load(d.into()) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    eprintln!("demo: {e:#}");
+                    None
+                }
+            }),
+            demo_anchor: None,
+            image_rect: egui::Rect::NOTHING,
             updates: 0,
         }
     }
@@ -470,6 +487,96 @@ impl Viewer {
         }
     }
 
+    /// The demo's actions at its current time: controls as functions of the
+    /// time within each segment, and simulated drags in the lens panel.
+    fn demo_actions(&mut self) {
+        let Some((seg, t)) = self.demo.as_ref().and_then(|d| d.segment()).map(|(s, t)| (s.clone(), t)) else { return };
+        // Pointer moves are smooth; controls step every 4 video frames, so
+        // the image accumulates a few passes between changes.
+        let u_smooth = (t / seg.dur).clamp(0.0, 1.0);
+        let u = ((t * 7.5).floor() / 7.5 / seg.dur).clamp(0.0, 1.0);
+        let ease = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let logl = |a: f64, b: f64, x: f64| (a.ln() + (b.ln() - a.ln()) * ease(x)).exp();
+        let mut pointer = None;
+        let k = &mut self.controls;
+        match seg.id.as_str() {
+            "intro" => {
+                self.show_lens = false;
+                (k.fstop, k.focus_m, k.focus_inf) = (3.5, 1.5, false);
+            }
+            "aperture" => k.fstop = logl(3.5, 11.0, u / 0.8),
+            "focus" => {
+                k.fstop = 5.6;
+                k.focus_m = if u < 0.5 { logl(1.5, 6.0, u / 0.45) } else { logl(6.0, 0.7, (u - 0.5) / 0.45) };
+            }
+            "iris" => {
+                k.focus_m = 1.5;
+                k.blades = if u < 0.25 { 6 } else if u < 0.55 { 3 } else { 9 };
+                k.curvature = if u < 0.75 { 0.0 } else { ease((u - 0.75) / 0.2) };
+            }
+            "coating" => (k.blades, k.curvature, k.coated) = (6, 0.0, false),
+            "summilux" => {
+                if let Some((p, _)) = self.lens_files.iter().find(|(p, _)| p.to_string_lossy().contains("summilux")) {
+                    k.lens = p.clone();
+                }
+                (k.coated, k.fstop) = (true, 1.4);
+            }
+            "wave" => k.wave = true,
+            "editor" => {
+                self.show_lens = true;
+                self.tab = LensTab::Glass;
+                // Drag an element, bend the front surface by its rim, then move its glass.
+                let phases: [(u8, f64, f64, egui::Vec2); 3] = [(1, 0.05, 0.32, egui::vec2(45.0, 0.0)), (2, 0.38, 0.62, egui::vec2(-22.0, -14.0)), (3, 0.68, 0.92, egui::vec2(-90.0, 45.0))];
+                for (phase, a, b, delta) in phases {
+                    let u = u_smooth;
+                    if u < a - 0.03 || u > b + 0.02 {
+                        continue;
+                    }
+                    let lens = &self.lens;
+                    let anchor = match self.demo_anchor.filter(|(p, _)| *p == phase) {
+                        Some((_, at)) => Some(at),
+                        None => {
+                            let first_element = (1..lens.surfaces.len()).find(|&i| lens.surfaces[i].material.is_some() && lens.surfaces[i - 1].material.is_none()).unwrap_or(0);
+                            let at = match phase {
+                                1 => self.diagram.point(lens, first_element, 0.0),
+                                2 => self.diagram.point(lens, 0, lens.surfaces[0].semi_diameter),
+                                _ => self.editor.draft.surfaces[0].material.as_ref().and_then(|g| self.glass_map.position(g)),
+                            };
+                            if let Some(at) = at {
+                                self.demo_anchor = Some((phase, at));
+                            }
+                            at
+                        }
+                    };
+                    if let Some(at) = anchor {
+                        let down = u >= a && u <= b;
+                        pointer = Some((at + delta * ease((u - a) / (b - a - 0.02)) as f32, down));
+                    }
+                }
+                if u > 0.96 && !self.diagram.undo.is_empty() {
+                    self.undo();
+                }
+            }
+            "overlays" => (self.show_fans, self.show_ghosts, self.show_focus) = (true, true, true),
+            "aberrations" => self.tab = LensTab::Aberrations,
+            "pupils" => self.tab = LensTab::Pupils,
+            "psf" => self.tab = LensTab::Psf,
+            "mtf" => self.tab = LensTab::Mtf,
+            "light" => self.tab = LensTab::LightLoss,
+            "outro" => {
+                self.show_lens = false;
+                (self.show_ghosts, self.show_focus) = (false, false);
+            }
+            _ => {}
+        }
+        if let Some(d) = &mut self.demo {
+            d.pointer = pointer;
+        }
+    }
+
     /// Applies an edited draft (or reports why it is invalid).
     fn edited(&mut self) {
         match Lens::parse(&self.editor.draft.to_text()) {
@@ -513,7 +620,7 @@ impl Viewer {
             });
             self.analysis_job = Some((applies, rx));
         }
-        if self.tab == LensTab::Mtf {
+        if self.tab == LensTab::Mtf || self.demo.is_some() {
             if let Some((_, rx)) = &self.mtf_job {
                 if let Ok(c) = rx.try_recv() {
                     self.mtf = Some((self.mtf_job.take().unwrap().0, c));
@@ -655,9 +762,16 @@ impl Viewer {
 }
 
 impl eframe::App for Viewer {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some(d) = &mut self.demo {
+            d.input(raw);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.updates += 1;
         self.poll_bank();
+        self.demo_actions();
         let shot_tab = std::env::var("LENS_VIEWER_TAB").ok();
         if self.shot.is_some() && self.updates == 5 && shot_tab.is_some() {
             // Just the given tab, with overlays and the first element selected.
@@ -745,6 +859,7 @@ impl eframe::App for Viewer {
             let aspect = self.texture_size.0 as f32 / self.texture_size.1 as f32;
             let size = if avail.x / avail.y > aspect { egui::vec2(avail.y * aspect, avail.y) } else { egui::vec2(avail.x, avail.x / aspect) };
             let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            self.image_rect = rect;
             ui.painter().image(id, rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
             if let Some(pos) = response.interact_pointer_pos().filter(|_| response.clicked()) {
                 let u = (pos.x - rect.min.x) / rect.width();
@@ -756,6 +871,14 @@ impl eframe::App for Viewer {
             }
         });
         if frames < MAX_FRAMES || self.bank_job.is_some() {
+            ui.ctx().request_repaint();
+        }
+        if let Some(d) = &self.demo {
+            d.overlay(ui.ctx(), self.image_rect);
+            if d.capture(ui.ctx()) {
+                eprintln!("demo frames written");
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             ui.ctx().request_repaint();
         }
         if let Some((n, path)) = self.shot.clone() {
