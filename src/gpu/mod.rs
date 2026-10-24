@@ -74,7 +74,9 @@ struct Params {
     light_base: u32,
     bg: [f32; 3],
     m: [f32; 9],
-    _pad: [u32; 3],
+    exposure: f32,
+    n_tasks: u32,
+    _pad: u32,
 }
 
 /// Device and queue, either our own (headless) or borrowed from the viewer.
@@ -205,6 +207,11 @@ pub struct GpuRenderer {
     frames: u32,
     /// Iris, stop radius and working f-number of the configured lens.
     optics: Option<(crate::lens::Iris, f64, f64)>,
+    /// Recent frame submissions, oldest first.
+    in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
+    /// Lights (centre, radius) and the ray grid size of each one's direct image.
+    scene_lights: Vec<(crate::math::Vec3, f64)>,
+    direct_grid: Vec<u32>,
     diffraction: Option<diffraction::GpuDiffraction>,
 }
 
@@ -219,6 +226,39 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
+}
+
+/// Ray grid size (multiple of 16, at most `max`) for each light's direct
+/// image: about two grid cells per pixel of its estimated sensor footprint.
+fn scene_light_grids(lens: &Lens, lights: &[(crate::math::Vec3, f64)], pitch: f64, max: u32) -> Vec<u32> {
+    use crate::math::{Ray, Vec3};
+    let zs = lens.sensor_z;
+    let sd = 1.5 * lens.surfaces[0].semi_diameter;
+    lights
+        .iter()
+        .map(|&(c, radius)| {
+            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            for l in [450.0, 550.0, 650.0] {
+                let m = lens.media(l);
+                for ring in 0..=4 {
+                    for k in 0..16 {
+                        let a = k as f64 / 16.0 * std::f64::consts::TAU;
+                        let rr = sd * ring as f64 / 4.0;
+                        let d = (Vec3::new(rr * a.cos(), rr * a.sin(), 0.0) - c).normalize();
+                        if let Some((r, _)) = lens.trace_forward(Ray { o: c, d }, l, &m) {
+                            let p = r.o + r.d * ((zs - r.o.z) / r.d.z);
+                            lo = [lo[0].min(p.x), lo[1].min(p.y)];
+                            hi = [hi[0].max(p.x), hi[1].max(p.y)];
+                        }
+                    }
+                }
+            }
+            let extent = if lo[0] <= hi[0] { (hi[0] - lo[0]).max(hi[1] - lo[1]) } else { 0.0 };
+            let own = 2.0 * radius * (zs - lens.last_z() + 50.0) / c.z.abs();
+            let px = (extent + own) / pitch;
+            ((2.0 * px + 8.0) as u32).div_ceil(16).clamp(1, max / 16) * 16
+        })
+        .collect()
 }
 
 /// Encodes an event list for the lens blob.
@@ -342,6 +382,9 @@ impl GpuRenderer {
             n_ghosts: 0,
             frames: 0,
             optics: None,
+            in_flight: Default::default(),
+            scene_lights: Vec::new(),
+            direct_grid: Vec::new(),
             diffraction: None,
             ctx,
         }
@@ -354,6 +397,12 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
+    }
+
+    /// Display-only settings: no need to restart accumulation.
+    pub fn set_display(&mut self, exposure: f64, tonemap: Tonemap) {
+        self.params.exposure = exposure as f32;
+        self.params.tonemap = (tonemap == Tonemap::Filmic) as u32;
     }
 
     pub fn frames(&self) -> u32 {
@@ -413,6 +462,7 @@ impl GpuRenderer {
             spectra.extend((0..=400).map(|i| l.spectrum.eval(cs, LAMBDA_MIN + i as f64) as f32));
             power.push(l.radius * l.radius / l.center.dot(l.center) * l.spectrum.eval(cs, 555.0));
         }
+        self.scene_lights = scene.lights.iter().map(|l| (l.center, l.radius)).collect();
         self.scene = Some(SceneData {
             n_rects: scene.rects.len(),
             n_lights: scene.lights.len(),
@@ -623,7 +673,10 @@ impl GpuRenderer {
             light_base: light_base as u32,
             bg: scene.background,
             m: [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]].map(|v| v as f32),
-            _pad: [0; 3],
+            // Display exposure survives reconfiguration (1 until set).
+            exposure: if self.params.exposure > 0.0 { self.params.exposure } else { 1.0 },
+            n_tasks: 0,
+            _pad: 0,
         };
 
         let g0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -658,6 +711,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
             ],
         }));
+        self.direct_grid = scene_light_grids(lens, self.scene_lights.as_slice(), pitch, s.light_grid);
         self.settings = Some(s.clone());
         self.optics = Some((lens.iris.clone(), lens.surfaces[lens.stop_index].semi_diameter, lens.working_fnumber()));
         self.compute_bounds();
@@ -697,19 +751,20 @@ impl GpuRenderer {
         let _ = LIGHT_BOUNDS_BASE;
     }
 
-    /// Light jobs for one frame: per light the direct image in every
-    /// wavelength bin, plus ghosts for lights bright enough, with fresh jitter.
+    /// Light work for one frame, one record per 16×16 tile of a ray grid: per
+    /// light the direct image in every wavelength bin (grid sized to its
+    /// footprint), plus ghosts for lights bright enough, with fresh jitter.
     /// Ghosts may use fewer, stratified wavelengths, weighted to stay unbiased.
-    fn jobs(&self) -> Vec<[u32; 12]> {
+    fn tasks(&self) -> Vec<[u32; 12]> {
         let s = self.settings.as_ref().unwrap();
         let scene = self.scene.as_ref().unwrap();
         let max_power = scene.power.iter().cloned().fold(0.0, f64::max);
         let ghost_k = if s.ghost_wavelengths == 0 { s.bins } else { s.ghost_wavelengths.min(s.bins) };
-        let mut jobs = Vec::new();
+        let mut tasks = Vec::new();
         for li in 0..scene.n_lights {
             let ghosts = if s.ghosts && scene.power[li] >= s.ghost_threshold * max_power { self.n_ghosts } else { 0 };
             for path in 0..=ghosts {
-                let samples = if path == 0 { s.bins } else { ghost_k };
+                let (samples, grid) = if path == 0 { (s.bins, self.direct_grid[li]) } else { (ghost_k, s.light_grid) };
                 for k in 0..samples {
                     // Jitter depends only on (frame, light, path, sample), so jobs are reproducible.
                     let key = ((self.frames as u64) << 40) ^ ((li as u64) << 20) ^ ((path as u64) << 8) ^ k as u64;
@@ -721,24 +776,26 @@ impl GpuRenderer {
                     let path_index = if path == 0 { 0 } else { 1 + path as u32 };
                     let weight = s.bins as f32 / samples as f32;
                     let f = [u - bin as f32, ex as f32, ey as f32, r(), r(), weight];
-                    jobs.push([
-                        li as u32,
-                        path_index,
-                        bin as u32,
-                        (path > 0) as u32,
-                        f[0].to_bits(),
-                        f[1].to_bits(),
-                        f[2].to_bits(),
-                        f[3].to_bits(),
-                        f[4].to_bits(),
-                        f[5].to_bits(),
-                        0,
-                        0,
-                    ]);
+                    for tile in 0..(grid / 16) * (grid / 16) {
+                        tasks.push([
+                            li as u32,
+                            path_index,
+                            bin as u32,
+                            (path > 0) as u32,
+                            f[0].to_bits(),
+                            f[1].to_bits(),
+                            f[2].to_bits(),
+                            f[3].to_bits(),
+                            f[4].to_bits(),
+                            f[5].to_bits(),
+                            tile,
+                            grid,
+                        ]);
+                    }
                 }
             }
         }
-        jobs
+        tasks
     }
 
     /// Adds one progressive frame.
@@ -762,7 +819,7 @@ impl GpuRenderer {
     }
 
     fn render_frame_parts(&mut self, surfaces: bool, lights: bool) {
-        let jobs = self.jobs();
+        let jobs = self.tasks();
         if jobs.len() > self.jobs_cap {
             self.jobs_cap = jobs.len().next_power_of_two();
             self.jobs_buf = Self::make_jobs_buf(&self.ctx.device, self.jobs_cap);
@@ -787,6 +844,7 @@ impl GpuRenderer {
         }
         let mut p = self.params;
         p.frame = self.frames;
+        p.n_tasks = jobs.len() as u32;
         self.ctx.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&p));
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         {
@@ -803,14 +861,11 @@ impl GpuRenderer {
             }
             if lights && !jobs.is_empty() {
                 pass.set_pipeline(&self.light_grid_pl);
-                let tiles = (p.light_grid / 16) * (p.light_grid / 16);
-                // jobs are indexed by workgroup y; split into chunks of the dispatch limit
-                let max_y = 65535usize;
-                assert!(jobs.len() <= max_y, "too many light jobs");
-                pass.dispatch_workgroups(tiles, jobs.len() as u32, 1);
+                let n = jobs.len() as u32;
+                pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
             }
         }
-        self.ctx.queue.submit([enc.finish()]);
+        self.in_flight.push_back(self.ctx.queue.submit([enc.finish()]));
         self.frames += 1;
     }
 
@@ -870,11 +925,6 @@ impl GpuRenderer {
         Ok(diffract)
     }
 
-    pub fn profile_diffraction(&mut self) -> Result<Vec<(usize, f64)>> {
-        self.prepare_diffraction()?;
-        Ok(self.diffraction.as_ref().unwrap().profile())
-    }
-
     /// Runs only the diffraction on `data` (spectral layout), for tests.
     #[cfg(test)]
     fn diffract_spectral(&mut self, data: &[f32]) -> Result<Film> {
@@ -912,6 +962,15 @@ impl GpuRenderer {
         };
         staging.unmap();
         Ok(Film { w: s.w, h: s.h, bins: s.bins, data })
+    }
+
+    /// Blocks until at most `n` frames are still running on the GPU.
+    pub fn throttle(&mut self, n: usize) -> Result<()> {
+        while self.in_flight.len() > n {
+            let i = self.in_flight.pop_front().unwrap();
+            self.ctx.device.poll(wgpu::PollType::Wait { submission_index: Some(i), timeout: None })?;
+        }
+        Ok(())
     }
 
     /// Blocks until the GPU is idle.

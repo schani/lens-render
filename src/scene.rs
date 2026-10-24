@@ -510,6 +510,13 @@ impl Scene {
         hit
     }
 
+    /// Distance to the nearest surface or light along `ray`.
+    pub fn hit_distance(&self, ray: &Ray) -> Option<f64> {
+        let rects = self.rects.iter().filter_map(|r| Self::rect_hit(r, ray).map(|h| h.0));
+        let lights = self.lights.iter().filter_map(|l| Self::sphere_hit(l, ray));
+        rects.chain(lights).min_by(|a, b| a.total_cmp(b))
+    }
+
     /// True if a surface blocks the segment from `ray.o` to distance `dist`.
     pub fn occluded(&self, ray: &Ray, dist: f64) -> bool {
         self.rects.iter().any(|r| Self::rect_hit(r, ray).is_some_and(|(t, _, _)| t < dist))

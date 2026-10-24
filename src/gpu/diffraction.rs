@@ -256,22 +256,6 @@ impl GpuDiffraction {
         }
     }
 
-    /// Wall time per command kind (ms), each command submitted on its own.
-    pub fn profile(&self) -> Vec<(usize, f64)> {
-        let mut t: Vec<(usize, f64)> = Vec::new();
-        for c in &self.convolve {
-            let t0 = std::time::Instant::now();
-            self.run(std::slice::from_ref(c));
-            self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
-            let ms = t0.elapsed().as_secs_f64() * 1000.0;
-            match t.iter_mut().find(|(p, _)| *p == c.pipeline) {
-                Some(e) => e.1 += ms,
-                None => t.push((c.pipeline, ms)),
-            }
-        }
-        t
-    }
-
     /// Convolves the spectral film in place.
     pub fn apply(&self, enc: &mut wgpu::CommandEncoder) {
         self.encode(enc, &self.convolve);

@@ -594,7 +594,7 @@ fn veil(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ------------------------------------------------- lights (forward grids)
-// Job: (light, path, bin, kind), (λ jitter, disk x, disk y, grid jitter x), (grid jitter y, weight, -, -).
+// Task: (light, path, bin, kind), (λ jitter, disk x, disk y, grid jitter x), (grid jitter y, weight, tile, grid size).
 // Each workgroup traces a 17×17 tile of grid rays and rasterises the 16×16
 // quads between them with their flux (after Hullin et al. 2011).
 
@@ -664,9 +664,13 @@ fn raster_triangle(a0: vec3<f32>, b0: vec3<f32>, c0: vec3<f32>, flux: f32, bin: 
 @compute @workgroup_size(16, 16)
 fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
               @builtin(local_invocation_index) li_idx: u32) {
-    let job = jobs[wg.y * 3u];
-    let jf = bitcast<vec4<f32>>(jobs[wg.y * 3u + 1u]);
-    let jf2 = bitcast<vec4<f32>>(jobs[wg.y * 3u + 2u]);
+    // One record per workgroup: a 16×16 tile of one job's grid.
+    let task = wg.x + wg.y * 65535u;
+    if (task >= P.n_tasks) { return; }
+    let job = jobs[task * 3u];
+    let jf = bitcast<vec4<f32>>(jobs[task * 3u + 1u]);
+    let jf2 = bitcast<vec4<f32>>(jobs[task * 3u + 2u]);
+    let tinfo = jobs[task * 3u + 2u];
     let li = job.x;
     let lg = light_geom(li);
     let ghost = job.w != 0u;
@@ -685,10 +689,10 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
     }
     if (workgroupUniformLoad(&region_ok) == 0u) { return; }
     let reg = region;
-    let g = P.light_grid;
+    let g = tinfo.w;
     let tiles = g / 16u;
-    let tx = wg.x % tiles;
-    let ty = wg.x / tiles;
+    let tx = tinfo.z % tiles;
+    let ty = tinfo.z / tiles;
     let cell = vec2<f32>((reg.z - reg.x) / f32(g), (reg.w - reg.y) / f32(g));
     let bin_width = LAMBDA_RANGE / f32(P.bins);
     let l = LAMBDA_MIN + bin_width * (f32(job.z) + jf.x);

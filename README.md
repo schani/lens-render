@@ -57,15 +57,44 @@ Layout and spot diagrams (0–23.4° field, 200 µm boxes):
 ```sh
 cargo build --release
 
+# Interactive viewer: progressive GPU rendering with live lens controls.
+./target/release/lens-render view scenes/night.toml
+
 # Optical analysis: paraxial data, aberrations vs. field, spot diagrams, layout.
 ./target/release/lens-render analyze lenses/cooke-triplet.lens --out analysis
 
-# Render a scene; writes out.png and a linear out.exr.
+# Render a scene on the GPU; writes out.png and a linear out.exr.
 ./target/release/lens-render render scenes/chart.toml -o chart.png
 ./target/release/lens-render render scenes/night.toml -o night.png --set fstop=8 --set spp=256
+
+# The CPU reference renderer (used automatically if there is no GPU).
+./target/release/lens-render render scenes/chart.toml -o chart.png --cpu
 ```
 
 Any `[camera]` key can be overridden with `--set key=value`.
+`LENS_PROFILE=1` prints GPU pass timings.
+
+### Viewer
+
+Controls for f-number, focus distance (or click the image to focus there),
+iris blades, blade curvature and rotation, coating, ghosts, diffraction,
+exposure, tone curve and resolution. Accumulation restarts on lens changes;
+exposure and tone curve apply without restarting. Diffraction switches on
+after 8 frames, once the image has settled. "Save PNG" writes `view.png`.
+
+### Speed
+
+Apple M2 Max, 1200×800, 16 spectral samples per pixel per frame:
+
+| Scene | GPU frame | Viewer |
+| --- | --- | --- |
+| Chart | 11 ms | 59 fps (vsync) |
+| Night (53 lights, ghosts) | 23 ms | 37 fps |
+| Bokeh (17 lights, ghosts) | 26 ms | 32 fps |
+
+The diffraction convolution takes 14 ms at f/3.5 and 26 ms at f/16. A
+256-sample render of the night scene takes about 1 s, against about 20 s on
+the CPU.
 
 ### Scenes
 
@@ -88,7 +117,7 @@ iris_rotation_deg = 0
 iris_curvature = 0.0                # 0 straight blades, 1 circular
 decenter = [[1, 0.1, 0.0]]          # element 1 (0 = front) shifted 0.1 mm in x
 spp = 64                            # samples per pixel (scene surfaces)
-light_samples = 4000000             # per light, direct image
+light_samples = 4000000             # per light, direct image (CPU renderer)
 ghost_grid = 128                    # ray grid per light and ghost path
 ghost_threshold = 0.01              # ghosts only for lights ≥ 1% of the brightest
 ghosts = true
@@ -164,15 +193,37 @@ nominal distance to the image plane; focusing moves the sensor.
 - Ghost energy from the backward pass matches the forward ray-grid ghosts
   within 4 % (5° and 17° field); the ray grid reproduces the direct image.
 - Output images are upright.
+- The GPU renderer matches the CPU reference: scene surfaces (also with a
+  decentred element), direct light images, ghosts and veiling glare in total
+  energy within 1 %; diffraction to f32 precision.
+- Diffraction kernels equal a brute-force pixel integration of the PSF.
 
 ## Approach
 
 - Scene surfaces: Monte Carlo tracing from the sensor through the lens.
   Directions are sampled on the rear element inside precomputed exit-pupil
   bounds; each wavelength bin gets its own low-discrepancy sample set.
-- Lights: traced forwards from the light (direct image by Monte Carlo,
-  ghosts as rasterised ray grids after Hullin et al., *Physically-Based
-  Real-Time Lens Flare Rendering*, SIGGRAPH 2011).
+- Lights: traced forwards from the light, direct images and ghosts as
+  rasterised ray grids after Hullin et al., *Physically-Based Real-Time Lens
+  Flare Rendering*, SIGGRAPH 2011 (the CPU renderer uses Monte Carlo for
+  direct images).
 - Film: per-pixel spectral irradiance in wavelength bins, convolved with the
   per-wavelength diffraction PSF, converted to sRGB via the CIE 1931 colour
   matching functions. Highlights far above white clip to white, as on a sensor.
+
+GPU renderer (wgpu compute, WGSL):
+
+- Nothing is specific to one lens: surfaces, refractive-index tables per
+  medium (1 nm steps) and the event lists of the direct and all ghost paths
+  are uploaded as data. Surfaces are intersected with a numerically stable
+  vertex-relative formula that also covers flat ones.
+- Progressive: every frame adds one sample per pixel and wavelength bin and
+  re-jitters the light grids (wavelength, point on the light, grid offset),
+  so lights converge to their true extent and spectrum.
+- Each light's direct-image grid is sized to its footprint on the sensor;
+  large ghost triangles and veiling glare go to a quarter-resolution film,
+  as they are smooth.
+- Diffraction kernels come from a summed-area table of the pupil's
+  Fraunhofer pattern (exact pixel integrals); the convolution is a GPU FFT,
+  two wavelength bins per complex transform.
+- Native float atomics where the GPU has them, compare-and-swap otherwise.

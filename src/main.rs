@@ -8,6 +8,7 @@ mod math;
 mod render;
 mod scene;
 mod spectrum;
+mod viewer;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -36,6 +37,13 @@ enum Cmd {
         #[arg(long)]
         cpu: bool,
     },
+    /// Open an interactive, progressively rendered view of a scene.
+    View {
+        scene: String,
+        /// Override settings, e.g. `--set fstop=8`.
+        #[arg(long = "set")]
+        overrides: Vec<String>,
+    },
     /// Print optical analysis of a lens prescription and draw diagnostics.
     Analyze {
         lens: String,
@@ -60,6 +68,10 @@ fn main() -> Result<()> {
             print!("{}", analysis::report(&lens, half_diag, out.as_deref())?);
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
+        Cmd::View { scene, overrides } => {
+            let Setup { file, scene, lens, fstop, focus, .. } = setup(&scene, &overrides)?;
+            viewer::run(file, scene, lens, fstop, focus)?;
+        }
     }
     Ok(())
 }
@@ -131,21 +143,20 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
     );
     let t0 = Instant::now();
     let pitch = c.sensor_width_mm / w as f64;
-    let cpu_diffraction = cpu || std::env::var("LENS_CPU_DIFFRACTION").is_ok();
-    let mut gpu_diffracted = false;
-    let mut film = if cpu {
-        let r = render::Renderer::new(&lens, &scene, &cs, w, h, c.sensor_width_mm, c.spectral_bins, norm);
-        let mut film = render::Film::new(w, h, c.spectral_bins);
-        r.render_surfaces(&mut film, c.spp, c.ghosts, true);
-        eprintln!("  surfaces done in {:.1}s", t0.elapsed().as_secs_f64());
-        let t1 = Instant::now();
-        r.render_lights(&mut film, c.light_samples, c.ghost_grid, if c.ghosts { c.ghost_threshold } else { f64::INFINITY }, true);
-        if !scene.lights.is_empty() {
-            eprintln!("  lights done in {:.1}s", t1.elapsed().as_secs_f64());
-        }
-        film
+    let gpu = if cpu {
+        None
     } else {
-        let mut g = gpu::GpuRenderer::new(gpu::GpuContext::headless()?);
+        match gpu::GpuContext::headless() {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("  no GPU ({e}), using the CPU renderer");
+                None
+            }
+        }
+    };
+    let mut gpu_diffracted = false;
+    let mut film = if let Some(ctx) = gpu {
+        let mut g = gpu::GpuRenderer::new(ctx);
         g.set_scene(&scene);
         let settings = gpu_settings(&file, w, h, norm);
         g.configure(&lens, &settings)?;
@@ -157,7 +168,10 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
             eprintln!("  profile: surfaces {s_ms:.1} ms, lights {l_ms:.1} ms per frame");
             g.reset();
         }
-        let frames = c.spp.div_ceil(c.spectral_bins as u32 * settings.spp_per_frame).max(1);
+        // Lights are sampled at one point of their area and one wavelength per bin
+        // each frame; a few frames are needed for them to converge.
+        let min_frames = if scene.lights.is_empty() { 1 } else { 16 };
+        let frames = c.spp.div_ceil(c.spectral_bins as u32 * settings.spp_per_frame).max(min_frames);
         for _ in 0..frames {
             g.render_frame();
         }
@@ -165,7 +179,7 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
         let ms = t1.elapsed().as_secs_f64() * 1000.0;
         eprintln!("  {frames} GPU frames in {ms:.0} ms ({:.1} ms/frame)", ms / frames as f64);
         let t2 = Instant::now();
-        gpu_diffracted = g.resolve(c.diffraction && !cpu_diffraction)?;
+        gpu_diffracted = g.resolve(c.diffraction)?;
         g.wait()?;
         if gpu_diffracted {
             eprintln!("  GPU diffraction done in {:.0} ms", t2.elapsed().as_secs_f64() * 1000.0);
@@ -178,7 +192,17 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
                 g.wait()?;
                 eprintln!("  profile: resolve (diffraction {diffract}) {:.1} ms", t3.elapsed().as_secs_f64() * 1000.0);
             }
-            eprintln!("  profile: diffraction commands {:?}", g.profile_diffraction()?);
+        }
+        film
+    } else {
+        let r = render::Renderer::new(&lens, &scene, &cs, w, h, c.sensor_width_mm, c.spectral_bins, norm);
+        let mut film = render::Film::new(w, h, c.spectral_bins);
+        r.render_surfaces(&mut film, c.spp, c.ghosts, true);
+        eprintln!("  surfaces done in {:.1}s", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
+        r.render_lights(&mut film, c.light_samples, c.ghost_grid, if c.ghosts { c.ghost_threshold } else { f64::INFINITY }, true);
+        if !scene.lights.is_empty() {
+            eprintln!("  lights done in {:.1}s", t1.elapsed().as_secs_f64());
         }
         film
     };

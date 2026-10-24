@@ -16,7 +16,7 @@ struct Params {
     light_base: u32, bg_r: f32, bg_g: f32, bg_b: f32,
     m0: f32, m1: f32, m2: f32, m3: f32,
     m4: f32, m5: f32, m6: f32, m7: f32,
-    m8: f32, _p0: u32, _p1: u32, _p2: u32,
+    m8: f32, exposure: f32, n_tasks: u32, _p2: u32,
 }
 
 const LAMBDA_MIN: f32 = 380.0;

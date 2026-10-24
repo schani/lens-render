@@ -56,9 +56,9 @@ fn to_rgb(@builtin(global_invocation_id) gid: vec3<u32>) {
         let c = P.cmf_off + 3u * b;
         xyz += spectral[pix * P.bins + b] * vec3<f32>(tables[c], tables[c + 1u], tables[c + 2u]);
     }
-    let rgb = vec3<f32>(P.m0 * xyz.x + P.m1 * xyz.y + P.m2 * xyz.z,
-                        P.m3 * xyz.x + P.m4 * xyz.y + P.m5 * xyz.z,
-                        P.m6 * xyz.x + P.m7 * xyz.y + P.m8 * xyz.z);
+    let rgb = P.exposure * vec3<f32>(P.m0 * xyz.x + P.m1 * xyz.y + P.m2 * xyz.z,
+                                     P.m3 * xyz.x + P.m4 * xyz.y + P.m5 * xyz.z,
+                                     P.m6 * xyz.x + P.m7 * xyz.y + P.m8 * xyz.z);
     // Highlights far above white clip to white, as on a sensor.
     let y = max(0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z, 0.0);
     let t = clamp((y - 1.0) / 3.0, 0.0, 1.0);
