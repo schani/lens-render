@@ -3,6 +3,7 @@ mod canvas;
 mod diffraction;
 mod fieldpsf;
 mod ghosts;
+mod footprint;
 mod glass;
 mod gpu;
 mod lens;
@@ -15,6 +16,7 @@ mod psf;
 mod psfbank;
 mod render;
 mod scene;
+mod seidel;
 mod spectrum;
 mod viewer;
 

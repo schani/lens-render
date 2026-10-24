@@ -443,6 +443,22 @@ impl Lens {
         (pts, Some((cur, throughput)))
     }
 
+    /// Cumulative throughput (Fresnel / coating transmission) of `ray` after
+    /// each surface of the forward path, apertures ignored; shorter if the
+    /// ray misses a surface.
+    pub fn surface_throughput(&self, ray: Ray, l: f64) -> Vec<f64> {
+        let m = self.media(l);
+        let mut out = Vec::new();
+        let (mut cur, mut t) = (ray, 1.0);
+        for ev in &self.forward_path {
+            let Some((r, ti, _)) = self.trace_path_opl(cur, l, &m, std::slice::from_ref(ev), false) else { break };
+            t *= ti;
+            out.push(t);
+            cur = r;
+        }
+        out
+    }
+
     pub fn load(path: &str) -> Result<Lens> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading lens {path}"))?;
         Lens::parse(&text)

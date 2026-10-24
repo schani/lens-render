@@ -60,7 +60,7 @@ impl Source {
 
     /// Ray from the source through `q`, and the optical path from the
     /// source's wavefront (point, or plane through the origin) to its origin.
-    fn ray_through(&self, q: Vec3) -> (Ray, f64) {
+    pub fn ray_through(&self, q: Vec3) -> (Ray, f64) {
         match *self {
             Source::Point(p) => (Ray { o: p, d: (q - p).normalize() }, 0.0),
             Source::Infinity(d) => {
@@ -119,6 +119,11 @@ fn aim_chief(lens: &Lens, src: &Source, l: f64, m: &Media, z_ep: f64) -> Option<
         q.y -= (-j[1][0] * f[0] + j[0][0] * f[1]) / det;
     }
     None
+}
+
+/// Point on the entrance-pupil plane the chief ray from `src` aims at.
+pub fn chief_aim(lens: &Lens, src: &Source, l: f64) -> Option<Vec3> {
+    aim_chief(lens, src, l, &lens.media(l), lens.paraxial_data(LAMBDA_D).entrance_pupil_z)
 }
 
 /// Where the chief ray from `src` meets the sensor plane.
