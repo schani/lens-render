@@ -94,6 +94,11 @@ pub struct Viewer {
     /// Analyses of the applied lens (for `applies`), computed in the background.
     analysis: Option<Analysis>,
     analysis_job: Option<(u64, std::sync::mpsc::Receiver<Analysis>)>,
+    /// MTF of the applied lens (slow, so only made while its tab is shown).
+    mtf: Option<(u64, crate::mtf::Curves)>,
+    mtf_job: Option<(u64, std::sync::mpsc::Receiver<crate::mtf::Curves>)>,
+    /// Published MTF next to the lens file (`<stem>…mtf.json`), by lens file.
+    mtf_reference: Option<(PathBuf, Option<serde_json::Value>)>,
     save_name: String,
     /// Ray fans of the applied lens, for this many applies and colouring.
     fans: Option<(u64, bool, Vec<RayPath>)>,
@@ -138,6 +143,7 @@ enum LensTab {
     Aberrations,
     Pupils,
     Psf,
+    Mtf,
     LightLoss,
     Numbers,
 }
@@ -169,6 +175,16 @@ impl Analysis {
             light_loss: crate::footprint::light_loss(lens, focus, half_diag),
         }
     }
+}
+
+/// Published MTF data next to a lens file: `<stem>…mtf.json`.
+fn mtf_reference(lens: &Path) -> Option<serde_json::Value> {
+    let stem = lens.file_stem()?.to_string_lossy().into_owned();
+    let dir = lens.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let file = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.file_name().map(|n| n.to_string_lossy().into_owned()).is_some_and(|n| n.starts_with(&stem) && n.ends_with("mtf.json"))
+    })?;
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
 }
 
 /// Default file name for saving an edited copy of the lens at `path`.
@@ -251,6 +267,9 @@ impl Viewer {
             seidel_shown: [true, true, true, true, false, true, true],
             analysis: None,
             analysis_job: None,
+            mtf: None,
+            mtf_job: None,
+            mtf_reference: None,
             fans: None,
             applies: 0,
             frame_ms: 0.0,
@@ -494,6 +513,24 @@ impl Viewer {
             });
             self.analysis_job = Some((applies, rx));
         }
+        if self.tab == LensTab::Mtf {
+            if let Some((_, rx)) = &self.mtf_job {
+                if let Ok(c) = rx.try_recv() {
+                    self.mtf = Some((self.mtf_job.take().unwrap().0, c));
+                }
+            }
+            if self.mtf_job.is_none() && self.mtf.as_ref().map(|m| m.0) != Some(self.applies) {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let lens = self.lens.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::mtf::curves(&lens, focus, half_diag));
+                });
+                self.mtf_job = Some((self.applies, rx));
+            }
+            if self.mtf_reference.as_ref().map(|r| &r.0) != Some(&self.lens_path) {
+                self.mtf_reference = Some((self.lens_path.clone(), mtf_reference(&self.lens_path)));
+            }
+        }
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
             self.undo();
         }
@@ -557,6 +594,7 @@ impl Viewer {
                         (LensTab::Aberrations, "Aberrations"),
                         (LensTab::Pupils, "Pupils"),
                         (LensTab::Psf, "PSF"),
+                        (LensTab::Mtf, "MTF"),
                         (LensTab::LightLoss, "Light loss"),
                         (LensTab::Numbers, "Numbers"),
                     ];
@@ -572,6 +610,13 @@ impl Viewer {
                         }
                     }
                     LensTab::Psf => self.psf_view.ui(ui, analysis.map(|a| (a.key, a.psfs.as_slice()))),
+                    LensTab::Mtf => {
+                        let published = self.mtf_reference.as_ref().and_then(|r| r.1.as_ref()).and_then(|j| lensview::published(j, k.fstop));
+                        match self.mtf.as_ref().filter(|m| m.0 == self.applies) {
+                            Some((_, c)) => lensview::mtf_ui(ui, c, published.as_ref()),
+                            None => drop(ui.label("computing MTF…")),
+                        }
+                    }
                     LensTab::Aberrations => match analysis.map(|a| a.seidel.as_ref()) {
                         Some(Some(sd)) => lensview::seidel_chart(ui, sd, &mut self.seidel_shown),
                         Some(None) => drop(ui.label("no chief ray for the full field")),
@@ -613,7 +658,22 @@ impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.updates += 1;
         self.poll_bank();
-        if self.shot.is_some() && !self.controls.wave {
+        let shot_tab = std::env::var("LENS_VIEWER_TAB").ok();
+        if self.shot.is_some() && self.updates == 5 && shot_tab.is_some() {
+            // Just the given tab, with overlays and the first element selected.
+            (self.show_ghosts, self.show_focus) = (true, true);
+            self.diagram.selected = Some(0);
+            self.tab = match shot_tab.as_deref() {
+                Some("glass") => LensTab::Glass,
+                Some("aberrations") => LensTab::Aberrations,
+                Some("pupils") => LensTab::Pupils,
+                Some("light") => LensTab::LightLoss,
+                Some("mtf") => LensTab::Mtf,
+                Some("numbers") => LensTab::Numbers,
+                _ => LensTab::Psf,
+            };
+        }
+        if self.shot.is_some() && !self.controls.wave && shot_tab.is_none() {
             // Exercise lens and resolution changes before the screenshot.
             match self.updates {
                 5 => self.controls.fstop = 8.0,
@@ -639,19 +699,6 @@ impl eframe::App for Viewer {
                     self.editor.draft.surfaces[0].radius *= 1.2;
                     self.pending = Lens::parse(&self.editor.draft.to_text()).ok();
                     self.controls.revision += 1;
-                }
-                // Overlays, a selection, and the tab named by LENS_VIEWER_TAB.
-                55 => {
-                    (self.show_ghosts, self.show_focus) = (true, true);
-                    self.diagram.selected = Some(0);
-                    self.tab = match std::env::var("LENS_VIEWER_TAB").as_deref() {
-                        Ok("glass") => LensTab::Glass,
-                        Ok("aberrations") => LensTab::Aberrations,
-                        Ok("pupils") => LensTab::Pupils,
-                        Ok("light") => LensTab::LightLoss,
-                        Ok("numbers") => LensTab::Numbers,
-                        _ => LensTab::Psf,
-                    };
                 }
                 _ => {}
             }
@@ -715,6 +762,7 @@ impl eframe::App for Viewer {
             // With wave optics, wait until the PSF bank is in use.
             let bank_ready = (!self.controls.wave || (self.bank_job.is_none() && self.bank.is_some()))
                 && (!self.show_lens || self.analysis.as_ref().is_some_and(|a| a.key == self.applies))
+                && (self.tab != LensTab::Mtf || self.mtf.as_ref().is_some_and(|m| m.0 == self.applies))
                 && self.updates > 60;
             if frames >= n && bank_ready && self.shot.is_some() {
                 self.shot = None;

@@ -121,6 +121,9 @@ through as it is set up, and edits it:
   - Pupils: the entrance pupil seen from five image heights, coloured by
     what blocks the light (vignetting).
   - PSF: wavefront error and white-light PSF at three image heights.
+  - MTF: contrast against image height at 5/10/20/40 lp/mm and against
+    frequency (with the diffraction limit); published data next to the lens
+    file (`<stem>…mtf.json`) is overlaid when the f-number matches.
   - Light loss: transmission surface by surface, coated and uncoated.
   - Numbers: the prescription as a table.
 

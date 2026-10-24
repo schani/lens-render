@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::fmt::Write;
 
 pub const WAVELENGTHS: [f64; 7] = [430.0, 470.0, 510.0, 550.0, 590.0, 630.0, 670.0];
-const CHART_FREQS: [f64; 4] = [5.0, 10.0, 20.0, 40.0];
+pub const CHART_FREQS: [f64; 4] = [5.0, 10.0, 20.0, 40.0];
 const COLORS: [&str; 4] = ["#c0392b", "#2471a3", "#1e8449", "#b9770e"];
 
 /// Sagittal and tangential MTF at `freqs` for image height `h` (mm).
@@ -16,6 +16,48 @@ pub fn mtf_at(lens: &Lens, h: f64, distance: Option<f64>, freqs: &[f64]) -> Opti
     let psf = PolyPsf::compute(lens, &Source::at_field(lens, theta, distance), &WAVELENGTHS, 1024)?;
     // The field lies along +y: tangential = radial (y), sagittal = x.
     Some((psf.mtf(freqs, [1.0, 0.0]), psf.mtf(freqs, [0.0, 1.0])))
+}
+
+/// MTF of a lens as set up, for display.
+pub struct Curves {
+    /// Image heights (mm), and per height the contrast at `CHART_FREQS`.
+    pub heights: Vec<f64>,
+    pub sag: Vec<[f64; 4]>,
+    pub tan: Vec<[f64; 4]>,
+    /// Contrast against `freqs` (lp/mm) at a few heights: (height, sagittal, tangential).
+    pub freqs: Vec<f64>,
+    pub sweep: Vec<(f64, Vec<f64>, Vec<f64>)>,
+    /// Diffraction limit at 550 nm and the working f-number, at `freqs`.
+    pub limit: Vec<f64>,
+}
+
+/// Curves at 9 image heights up to `half_diag`, sweeps at 0, 0.75 and 1 × `half_diag`.
+pub fn curves(lens: &Lens, distance: Option<f64>, half_diag: f64) -> Curves {
+    use rayon::prelude::*;
+    let freqs: Vec<f64> = (0..=20).map(|i| i as f64 * 4.0).collect();
+    let heights: Vec<f64> = (0..=8).map(|i| half_diag * i as f64 / 8.0).collect();
+    let rows: Vec<Option<(Vec<f64>, Vec<f64>)>> = heights
+        .par_iter()
+        .map(|&h| {
+            let theta = field_for_height(lens, h, distance)?;
+            let psf = PolyPsf::compute(lens, &Source::at_field(lens, theta, distance), &WAVELENGTHS, 512)?;
+            let all: Vec<f64> = CHART_FREQS.iter().chain(&freqs).copied().collect();
+            Some((psf.mtf(&all, [1.0, 0.0]), psf.mtf(&all, [0.0, 1.0])))
+        })
+        .collect();
+    let mut c = Curves { heights: Vec::new(), sag: Vec::new(), tan: Vec::new(), freqs: freqs.clone(), sweep: Vec::new(), limit: Vec::new() };
+    for (i, (h, r)) in heights.iter().zip(&rows).enumerate() {
+        let Some((s, t)) = r else { continue };
+        c.heights.push(*h);
+        c.sag.push([s[0], s[1], s[2], s[3]]);
+        c.tan.push([t[0], t[1], t[2], t[3]]);
+        if [0, 6, 8].contains(&i) {
+            c.sweep.push((*h, s[4..].to_vec(), t[4..].to_vec()));
+        }
+    }
+    let n_w = lens.working_fnumber();
+    c.limit = freqs.iter().map(|&f| diffraction_limit_mtf(f, 550.0, n_w)).collect();
+    c
 }
 
 /// Published MTF data to overlay: {"f/1.4": {"5S": [...], "5T": [...], …}, "heights_mm": [...]},
