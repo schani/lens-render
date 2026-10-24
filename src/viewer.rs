@@ -3,6 +3,7 @@
 use crate::gpu::wave::WaveGpu;
 use crate::gpu::{self, GpuContext, GpuRenderer, Tonemap, wgpu};
 use crate::lens::{Coating, Lens};
+use crate::lensview::{self, LensEditor, RayPath};
 use crate::math::{Ray, Vec3};
 use crate::scene::{Scene, SceneFile};
 use crate::psfbank::PsfBank;
@@ -31,6 +32,8 @@ struct Controls {
     coated: bool,
     ghosts: bool,
     wave: bool,
+    /// Counts prescription edits.
+    revision: u32,
 }
 
 impl Controls {
@@ -73,6 +76,15 @@ pub struct Viewer {
     /// PSF banks are built on a device of their own: work submitted from
     /// another thread would make the window's surface reconfiguration fail.
     wave: Arc<std::sync::OnceLock<Option<WaveGpu>>>,
+    editor: LensEditor,
+    /// An edited prescription waiting to be applied.
+    pending: Option<Lens>,
+    show_lens: bool,
+    by_wavelength: bool,
+    save_name: String,
+    /// Ray fans of the applied lens, for this many applies and colouring.
+    fans: Option<(u64, bool, Vec<RayPath>)>,
+    applies: u64,
     frame_ms: f64,
     last_frame: Instant,
     /// Self-check: change controls along the way, then after this many frames
@@ -105,6 +117,11 @@ pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop:
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Default file name for saving an edited copy of the lens at `path`.
+fn edited_name(path: &Path) -> String {
+    format!("{}-edited.lens", path.file_stem().unwrap_or_default().to_string_lossy())
 }
 
 /// `*.lens` files next to `path`, sorted, with their `@name` (or file stem).
@@ -141,9 +158,12 @@ impl Viewer {
             coated: c.coating != "none",
             ghosts: c.ghosts,
             wave: c.wave_optics,
+            revision: 0,
         };
         let max_aperture = lens.max_aperture();
         Viewer {
+            editor: LensEditor::new(&lens),
+            save_name: edited_name(&lens_path),
             renderer,
             render_state: rs,
             texture_id: None,
@@ -165,6 +185,11 @@ impl Viewer {
             bank: None,
             bank_job: None,
             wave: Default::default(),
+            pending: None,
+            show_lens: true,
+            by_wavelength: false,
+            fans: None,
+            applies: 0,
             frame_ms: 0.0,
             last_frame: Instant::now(),
             shot: std::env::var("LENS_VIEWER_SHOT").ok().map(|p| (32, p)),
@@ -179,8 +204,12 @@ impl Viewer {
 
     /// Rebuilds the lens for the controls and restarts accumulation.
     fn apply(&mut self) -> Result<()> {
-        // Another lens: load it and clamp the f-number to its maximum aperture.
-        let new_base = if self.controls.lens == self.lens_path {
+        // An edited prescription, or another lens file (which brings its iris);
+        // the f-number is clamped to the new lens' maximum aperture.
+        let from_file = self.pending.is_none() && self.controls.lens != self.lens_path;
+        let new_base = if let Some(p) = self.pending.take() {
+            Some(p)
+        } else if !from_file {
             None
         } else if self.controls.lens == self.scene_lens.0 {
             Some(self.scene_lens.1.clone())
@@ -189,7 +218,9 @@ impl Viewer {
         };
         if let Some(b) = &new_base {
             self.controls.fstop = self.controls.fstop.max(b.max_aperture());
-            (self.controls.blades, self.controls.curvature) = (b.blades, b.blade_curvature);
+            if from_file {
+                (self.controls.blades, self.controls.curvature) = (b.blades, b.blade_curvature);
+            }
         }
         let k = self.controls.clone();
         let mut lens = new_base.clone().unwrap_or_else(|| self.base_lens.clone());
@@ -230,11 +261,16 @@ impl Viewer {
         self.renderer.configure(&lens, &settings, bank.as_deref())?;
         if let Some(b) = new_base {
             self.max_aperture = b.max_aperture();
+            if from_file {
+                self.editor = LensEditor::new(&b);
+                self.save_name = edited_name(&k.lens);
+            }
             self.base_lens = b;
             self.lens_path = k.lens.clone();
         }
         self.lens = lens;
         self.applied = Some(k);
+        self.applies += 1;
         Ok(())
     }
 
@@ -302,7 +338,10 @@ impl Viewer {
                     ui.selectable_value(&mut k.lens, path.clone(), name);
                 }
             });
-        ui.label(format!("f = {:.1} mm", self.lens.focal_length()));
+        ui.horizontal(|ui| {
+            ui.label(format!("f = {:.1} mm", self.lens.focal_length()));
+            ui.checkbox(&mut self.show_lens, "lens panel");
+        });
         ui.separator();
         ui.add(egui::Slider::new(&mut k.fstop, self.max_aperture..=32.0).logarithmic(true).text("f-number"));
         ui.horizontal(|ui| {
@@ -349,6 +388,64 @@ impl Viewer {
         }
     }
 
+    /// The lens panel: cross-section with ray fans, and the prescription.
+    fn lens_ui(&mut self, ui: &mut egui::Ui) {
+        let c = &self.file.camera;
+        let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
+        let key = (self.applies, self.by_wavelength);
+        if self.fans.as_ref().map(|f| (f.0, f.1)) != Some(key) {
+            let k = self.applied.as_ref().unwrap_or(&self.controls);
+            let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
+            self.fans = Some((key.0, key.1, lensview::trace_fans(&self.lens, focus, half_diag, self.by_wavelength)));
+        }
+        let h = ui.available_height();
+        let w = ui.available_width();
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(w * 0.5, h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Ray fans for image heights 0, 0.7 and 1 (green, red, blue); × where a ray is blocked.");
+                    ui.checkbox(&mut self.by_wavelength, "colour by wavelength");
+                });
+                lensview::diagram(ui, &self.lens, &self.fans.as_ref().unwrap().2, half_diag);
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Revert").on_hover_text("reload the lens file").clicked() {
+                        match Lens::load(self.lens_path.to_str().unwrap_or_default()) {
+                            Ok(l) => {
+                                self.editor = LensEditor::new(&l);
+                                self.pending = Some(l);
+                                self.controls.revision += 1;
+                            }
+                            Err(e) => self.status = format!("{e:#}"),
+                        }
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(160.0));
+                    if ui.button("Save as").clicked() {
+                        let path = self.lens_path.with_file_name(&self.save_name);
+                        match std::fs::write(&path, self.editor.draft.to_text()) {
+                            Ok(()) => {
+                                self.status = format!("wrote {}", path.display());
+                                self.lens_files = lens_files(&path);
+                                self.lens_path = path.clone();
+                                self.controls.lens = path;
+                            }
+                            Err(e) => self.status = format!("save failed: {e}"),
+                        }
+                    }
+                });
+                if let Some(l) = self.editor.ui(ui) {
+                    self.pending = Some(l);
+                    self.controls.revision += 1;
+                }
+                if !self.editor.error.is_empty() {
+                    ui.colored_label(egui::Color32::RED, &self.editor.error);
+                }
+            });
+        });
+    }
+
     fn save(&mut self, path: &str) -> Result<()> {
         self.renderer.resolve(self.diffraction)?;
         let film = self.renderer.read_film()?;
@@ -384,10 +481,19 @@ impl eframe::App for Viewer {
                 }
                 35 => self.controls.fstop = self.max_aperture,
                 40 => self.controls.lens = self.scene_lens.0.clone(),
+                // A prescription edit: a weaker first surface.
+                50 => {
+                    self.editor.draft.surfaces[0].radius *= 1.2;
+                    self.pending = Lens::parse(&self.editor.draft.to_text()).ok();
+                    self.controls.revision += 1;
+                }
                 _ => {}
             }
         }
         egui::Panel::left("controls").exact_size(300.0).show(ui, |ui| self.controls_ui(ui));
+        if self.show_lens && self.applied.is_some() {
+            egui::Panel::bottom("lens").resizable(true).default_size(340.0).show(ui, |ui| self.lens_ui(ui));
+        }
         if self.applied.as_ref() != Some(&self.controls) {
             if let Err(e) = self.apply() {
                 self.status = format!("{e:#}");

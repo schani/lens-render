@@ -130,6 +130,23 @@ pub fn chief_image(lens: &Lens, src: &Source, l: f64) -> Option<[f64; 2]> {
     Some([p.x, p.y])
 }
 
+/// `count` rays from `src` in its meridional plane, spread evenly across
+/// `spread` times the entrance pupil around the chief ray (aimed at the
+/// d line). None if no chief ray reaches the stop.
+pub fn meridional_fan(lens: &Lens, src: &Source, count: usize, spread: f64) -> Option<Vec<Ray>> {
+    let m = lens.media(LAMBDA_D);
+    let par = lens.paraxial_data(LAMBDA_D);
+    let q = aim_chief(lens, src, LAMBDA_D, &m, par.entrance_pupil_z)?;
+    let r = spread * lens.iris.max_radius / par.entrance_pupil_mag;
+    // The meridional plane holds the axis and the source.
+    let dir = match *src {
+        Source::Point(p) => Vec3::new(p.x, p.y, 0.0),
+        Source::Infinity(d) => Vec3::new(d.x, d.y, 0.0),
+    };
+    let dir = if dir.length() > 0.0 { dir.normalize() } else { Vec3::new(0.0, 1.0, 0.0) };
+    Some((0..count).map(|k| src.ray_through(q + dir * (r * (2.0 * k as f64 / (count - 1).max(1) as f64 - 1.0))).0).collect())
+}
+
 /// Field angle whose chief ray lands at image height `h` (mm, along +y).
 pub fn field_for_height(lens: &Lens, h: f64, distance: Option<f64>) -> Option<f64> {
     if h == 0.0 {

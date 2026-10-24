@@ -44,6 +44,11 @@ impl Glass {
         }
     }
 
+    /// Names of the catalogue glasses.
+    pub fn catalog() -> impl Iterator<Item = &'static str> {
+        CATALOG.iter().map(|(n, _, _)| *n)
+    }
+
     pub fn from_abbe(name: &str, nd: f64, vd: f64) -> Glass {
         let inv2 = |l: f64| 1.0 / (l * 1e-3).powi(2);
         let b = (nd - 1.0) / vd / (inv2(LAMBDA_F) - inv2(LAMBDA_C));

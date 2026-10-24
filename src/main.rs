@@ -4,6 +4,7 @@ mod diffraction;
 mod glass;
 mod gpu;
 mod lens;
+mod lensview;
 mod math;
 mod mtf;
 mod plot;

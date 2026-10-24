@@ -371,6 +371,69 @@ impl Lens {
         self.surfaces.iter().all(|s| s.decenter == (0.0, 0.0))
     }
 
+    /// The prescription as `.lens` text (decentering is not part of it).
+    pub fn to_text(&self) -> String {
+        let mut t = format!("@name {}\n@iris {} {}\n", self.name, self.blades, self.blade_curvature);
+        for f in &self.floating {
+            t += &format!("@float {} {} {} {}\n", f.surface + 1, f.at_infinity, f.at_close, f.close_distance / 1000.0);
+        }
+        t += "# radius   thickness   material   semi-diameter\n";
+        for s in &self.surfaces {
+            let radius = if s.is_stop { "stop".to_string() } else if s.radius == 0.0 { "inf".to_string() } else { s.radius.to_string() };
+            let material = s.material.as_ref().map_or("air", |g| g.name());
+            t += &format!("{radius} {} {material} {}", s.thickness, s.semi_diameter);
+            if s.conic != 0.0 {
+                t += &format!(" k={}", s.conic);
+            }
+            for (i, a) in s.aspheric.iter().enumerate().filter(|(_, a)| **a != 0.0) {
+                t += &format!(" a{}={a}", 4 + 2 * i);
+            }
+            t += "\n";
+        }
+        t
+    }
+
+    /// Inserts a surface before row `at`, keeping floating gaps on their rows.
+    pub fn insert_surface(&mut self, at: usize, s: Surface) {
+        self.surfaces.insert(at, s);
+        for f in &mut self.floating {
+            if f.surface >= at {
+                f.surface += 1;
+            }
+        }
+    }
+
+    /// Removes row `at` (and a floating gap on it).
+    pub fn remove_surface(&mut self, at: usize) {
+        self.surfaces.remove(at);
+        self.floating.retain(|f| f.surface != at);
+        for f in &mut self.floating {
+            if f.surface > at {
+                f.surface -= 1;
+            }
+        }
+    }
+
+    /// Traces `ray` forward surface by surface: the points it reaches, and
+    /// the ray leaving the lens if it gets through (if not, the last point is
+    /// where it is blocked).
+    pub fn trace_points(&self, ray: Ray, l: f64) -> (Vec<Vec3>, Option<Ray>) {
+        let m = self.media(l);
+        let mut pts = vec![ray.o];
+        let mut cur = ray;
+        for ev in &self.forward_path {
+            let Some((r, _, _)) = self.trace_path_opl(cur, l, &m, std::slice::from_ref(ev), false) else { return (pts, None) };
+            pts.push(r.o);
+            let s = &self.surfaces[ev.surface as usize];
+            let (x, y) = (r.o.x - s.decenter.0, r.o.y - s.decenter.1);
+            if x * x + y * y > s.semi_diameter * s.semi_diameter || (s.is_stop && !self.iris.contains(x, y)) {
+                return (pts, None);
+            }
+            cur = r;
+        }
+        (pts, Some(cur))
+    }
+
     pub fn load(path: &str) -> Result<Lens> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading lens {path}"))?;
         Lens::parse(&text)
@@ -863,6 +926,20 @@ mod tests {
         };
         let r: f64 = 8.0;
         assert!((s.sag(r) - (r * r / 40.0 + 1e-5 * r.powi(4))).abs() < 1e-12);
+    }
+
+    #[test]
+    fn text_round_trip() {
+        for text in [include_str!("../lenses/cooke-triplet.lens"), include_str!("../lenses/summilux-50-asph.lens"), include_str!("../lenses/double-gauss.lens")] {
+            let a = Lens::parse(text).unwrap();
+            let b = Lens::parse(&a.to_text()).unwrap();
+            assert_eq!(a.to_text(), b.to_text());
+            assert_eq!((a.name.as_str(), a.blades, a.surfaces.len(), a.floating.len()), (b.name.as_str(), b.blades, b.surfaces.len(), b.floating.len()));
+            assert!((a.focal_length() - b.focal_length()).abs() < 1e-12);
+            for (s, t) in a.surfaces.iter().zip(&b.surfaces) {
+                assert_eq!((s.radius, s.thickness, s.semi_diameter, s.conic, &s.aspheric), (t.radius, t.thickness, t.semi_diameter, t.conic, &t.aspheric));
+            }
+        }
     }
 
     #[test]
