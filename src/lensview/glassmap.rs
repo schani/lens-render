@@ -83,7 +83,8 @@ impl GlassMap {
         let Some(row) = row else { return false };
         let mut changed = false;
         let mine = draft.surfaces[row].material.as_ref().map(|g| at(g.abbe(), g.nd()));
-        if response.drag_started() && response.interact_pointer_pos().zip(mine).is_some_and(|(p, m)| (p - m).length() < 10.0) {
+        let origin = ui.input(|i| i.pointer.press_origin());
+        if response.drag_started() && origin.zip(mine).is_some_and(|(p, m)| (p - m).length() < 10.0) {
             undo.push(draft.clone());
             self.dragging = true;
         }

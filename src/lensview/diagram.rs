@@ -124,7 +124,6 @@ pub struct Diagram {
     /// Selected surface.
     pub selected: Option<usize>,
     drag: Option<Drag>,
-    /// Kept while dragging, so the lens doesn't move under the pointer.
     view: Option<View>,
     menu: Option<Target>,
     pub undo: Vec<Lens>,
@@ -144,17 +143,16 @@ impl Diagram {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::WHITE);
         let par = shown.paraxial_data(LAMBDA_D);
-        let view = *self.view.get_or_insert_with(|| {
+        // Refitted every frame except while dragging, so the lens doesn't
+        // move under the pointer.
+        if self.drag.is_none() || self.view.is_none() {
             let z0 = overlays.fans.unwrap_or(&[]).iter().flat_map(|r| r.pts.first()).map(|p| p.z).fold(0.0, f64::min).min(par.entrance_pupil_z) - 2.0;
             let z1 = shown.sensor_z.max(par.exit_pupil_z) + 3.0;
             let ymax = shown.surfaces.iter().map(|s| s.semi_diameter).fold(half_diag, f64::max) * 1.15;
             let scale = ((rect.width() - 16.0) as f64 / (z1 - z0)).min(rect.height() as f64 / (2.0 * ymax));
-            View { left: rect.left() + 8.0, cy: rect.center().y, z0, scale }
-        });
-        if self.drag.is_none() {
-            // Refit next frame (the lens or the panel may have changed).
-            self.view = None;
+            self.view = Some(View { left: rect.left() + 8.0, cy: rect.center().y, z0, scale });
         }
+        let view = self.view.unwrap();
         let at = |z: f64, y: f64| view.at(z, y);
         let n = 40;
         let surf = &shown.surfaces;
@@ -167,8 +165,8 @@ impl Diagram {
             if s.is_stop { at(s.z, s.semi_diameter) } else { at(s.z + s.sag(s.semi_diameter), s.semi_diameter) }
         };
 
-        // What the pointer is over: rim handles, surfaces, then glass.
-        let hover = response.hover_pos().and_then(|p| {
+        // What is at a point: rim handles, surfaces, then glass.
+        let target_at = |p: Pos2| {
             if let Some(i) = (0..surf.len()).find(|&i| (rim(i) - p).length() < 7.0) {
                 return Some(Target::Rim(i));
             }
@@ -195,11 +193,15 @@ impl Diagram {
                 })
                 .and_then(|i| lensedit::group_of(shown, i))
                 .map(|(f, l)| Target::Group(f, l))
-        });
+        };
+        let hover = response.hover_pos().and_then(target_at);
 
         let mut changed = false;
         if response.drag_started() {
-            if let (Some(t), Some(p)) = (hover, response.interact_pointer_pos()) {
+            // A drag is recognised only after some movement: take the target
+            // where the button went down.
+            let origin = ui.input(|i| i.pointer.press_origin());
+            if let Some((t, p)) = origin.and_then(|p| target_at(p).map(|t| (t, p))) {
                 self.undo.push(draft.clone());
                 self.drag = Some(Drag { target: t, start: draft.clone(), from: p });
                 self.selected = Some(match t {
@@ -405,5 +407,73 @@ impl Diagram {
             });
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drives the editor with pointer events: `drag` from `from` by `by` (points).
+    fn drag(d: &mut Diagram, shown: &Lens, draft: &mut Lens, from: impl Fn(&View) -> Pos2, by: egui::Vec2) -> bool {
+        let ctx = egui::Context::default();
+        let mut changed = false;
+        let mut frame = |events: Vec<egui::Event>, d: &mut Diagram, draft: &mut Lens| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 500.0))),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let o = Overlays { fans: None, ghosts: None, focus: None };
+                    changed |= d.ui(ui, shown, draft, &o, 21.6);
+                });
+            });
+        };
+        frame(vec![], d, draft);
+        let p = from(&d.view.unwrap());
+        let button = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(p), button(true)], d, draft);
+        for k in 1..=10 {
+            frame(vec![egui::Event::PointerMoved(p + by * (k as f32 / 10.0))], d, draft);
+        }
+        frame(vec![egui::Event::PointerButton { pos: p + by, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }], d, draft);
+        changed
+    }
+
+    fn triplet() -> Lens {
+        let mut l = Lens::parse(include_str!("../../lenses/cooke-triplet.lens")).unwrap();
+        l.prepare(5.6, 0, 0.0, 0.0, None, 0.0).unwrap();
+        l
+    }
+
+    #[test]
+    fn dragging_a_surface_moves_it() {
+        let shown = triplet();
+        let mut draft = Lens::parse(include_str!("../../lenses/cooke-triplet.lens")).unwrap();
+        let before: Vec<f64> = draft.surfaces.iter().map(|s| s.thickness).collect();
+        let mut d = Diagram::default();
+        // Surface 3 (front of the middle element), on the axis.
+        let z = shown.surfaces[2].z;
+        assert!(drag(&mut d, &shown, &mut draft, |v| v.at(z, 0.0), egui::vec2(-20.0, 0.0)));
+        let dz = draft.surfaces[1].thickness - before[1];
+        assert!(dz < -0.1, "gap in front changed by {dz}");
+        assert!((draft.surfaces[2].thickness - before[2] + dz).abs() < 1e-9);
+        assert_eq!(d.selected, Some(2));
+        assert_eq!(d.undo.len(), 1);
+    }
+
+    #[test]
+    fn dragging_a_rim_bends_the_surface() {
+        let shown = triplet();
+        let mut draft = Lens::parse(include_str!("../../lenses/cooke-triplet.lens")).unwrap();
+        let mut d = Diagram::default();
+        let s = shown.surfaces[0].clone();
+        let r0 = draft.surfaces[0].radius;
+        assert!(drag(&mut d, &shown, &mut draft, |v| v.at(s.z + s.sag(s.semi_diameter), s.semi_diameter), egui::vec2(15.0, -10.0)));
+        let s1 = &draft.surfaces[0];
+        assert!(s1.semi_diameter > s.semi_diameter, "diameter {}", s1.semi_diameter);
+        assert!(s1.radius > 0.0 && s1.radius < r0, "radius {r0} -> {}", s1.radius);
     }
 }
