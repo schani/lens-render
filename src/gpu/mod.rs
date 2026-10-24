@@ -500,6 +500,13 @@ impl GpuRenderer {
         let mut lens_blob: Vec<u32> = Vec::new();
         for srf in &lens.surfaces {
             let c = if srf.radius == 0.0 { 0.0 } else { 1.0 / srf.radius };
+            if srf.aspheric.len() > 8 {
+                bail!("the GPU renderer supports aspheric terms up to a18");
+            }
+            let mut a = [0u32; 8];
+            for (k, v) in srf.aspheric.iter().enumerate() {
+                a[k] = (*v as f32).to_bits();
+            }
             lens_blob.extend([
                 (srf.z as f32).to_bits(),
                 (c as f32).to_bits(),
@@ -507,9 +514,10 @@ impl GpuRenderer {
                 srf.is_stop as u32,
                 (srf.decenter.0 as f32).to_bits(),
                 (srf.decenter.1 as f32).to_bits(),
-                0,
-                0,
+                (srf.conic as f32).to_bits(),
+                srf.is_aspheric() as u32,
             ]);
+            lens_blob.extend(a);
         }
         let ghosts = lens.ghost_paths();
         let ghosts_back = lens.ghost_paths_backward();
@@ -616,11 +624,7 @@ impl GpuRenderer {
         let front_z = lens
             .surfaces
             .iter()
-            .map(|srf| {
-                let r = srf.semi_diameter;
-                let sag = if srf.radius == 0.0 { 0.0 } else { srf.radius - srf.radius.signum() * (srf.radius * srf.radius - r * r).max(0.0).sqrt() };
-                srf.z + sag.min(0.0)
-            })
+            .map(|srf| (0..=16).map(|k| srf.sag(srf.semi_diameter * k as f64 / 16.0)).fold(0.0, f64::min) + srf.z)
             .fold(0.0, f64::min)
             - 1.0;
         let m = self.cs.rgb_matrix();
@@ -1322,5 +1326,39 @@ mod tests {
             let change: f64 = plain.data.iter().zip(&diffracted.data).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum();
             assert!(change > 1e-3 * total(&plain), "diffraction had no effect");
         }
+    }
+
+    /// Aspheric surfaces trace the same on the GPU as on the CPU.
+    #[test]
+    fn asphere_matches_cpu() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let text = include_str!("../../lenses/cooke-triplet.lens")
+            .replace("  22.01359    3.25896     N-SK16     10.0", "  22.01359    3.25896     N-SK16     10.0  k=-0.6 a4=-4e-6 a6=2e-8")
+            .replace(" -18.39533    42.20778    air         8.2", " -18.39533    42.20778    air         8.2  k=1.5 a4=3e-5");
+        let mut lens = Lens::parse(&text).unwrap();
+        assert!(lens.surfaces[0].is_aspheric() && lens.surfaces[6].is_aspheric());
+        lens.set_aperture(4.0, 6, 0.0, 0.0).unwrap();
+        lens.sensor_z = lens.best_focus(Some(2000.0)).unwrap();
+        let light = Light { center: Vec3::new(600.0, -300.0, -4000.0), radius: 30.0, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1e-3 } };
+        let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 1000.0)], lights: vec![light], background: [0.05, 0.1, 0.2] };
+        let s = settings(120, 80, 8, true);
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        g.configure(&lens, &s).unwrap();
+        for _ in 0..256 {
+            g.render_frame();
+        }
+        g.resolve(false).unwrap();
+        let gpu = g.read_film().unwrap();
+        let cs = ColorSystem::new();
+        let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, 8, 1.0);
+        let mut cpu = Film::new(120, 80, 8);
+        r.render_surfaces(&mut cpu, 2048, true, false);
+        r.render_lights(&mut cpu, 4_000_000, 256, 0.0, false);
+        let (tg, tc) = (total(&gpu), total(&cpu));
+        let d = block_diff(&cpu, &gpu);
+        println!("asphere: total gpu {tg} cpu {tc}, block diff {d}");
+        assert!((tg - tc).abs() / tc < 0.01);
+        assert!(d < 0.03);
     }
 }

@@ -128,6 +128,7 @@ impl Viewer {
         lens.coating = if k.coated { Coating::Single { n: 1.38, lambda0: 550.0 } } else { Coating::None };
         lens.set_aperture(k.fstop, k.blades, k.rotation, k.curvature)?;
         let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
+        lens.set_floating(focus);
         lens.sensor_z = lens.best_focus(focus)? + self.file.camera.focus_offset_mm;
         let c = &self.file.camera;
         let settings = gpu::Settings {

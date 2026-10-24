@@ -24,6 +24,70 @@ pub struct Surface {
     pub z: f64,
     /// Lateral misalignment (manufacturing error) of the surface.
     pub decenter: (f64, f64),
+    /// Conic constant k (0 = sphere).
+    pub conic: f64,
+    /// Even aspheric coefficients A4, A6, A8, … of z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + Σ A₂ᵢ r²ⁱ.
+    pub aspheric: Vec<f64>,
+}
+
+impl Surface {
+    pub fn curvature(&self) -> f64 {
+        if self.radius == 0.0 { 0.0 } else { 1.0 / self.radius }
+    }
+
+    pub fn is_aspheric(&self) -> bool {
+        self.conic != 0.0 || self.aspheric.iter().any(|a| *a != 0.0)
+    }
+
+    /// Sag as a function of u = r²; None outside the conic's domain.
+    pub fn sag_u(&self, u: f64) -> Option<f64> {
+        let c = self.curvature();
+        let q = 1.0 - (1.0 + self.conic) * c * c * u;
+        if q < 0.0 {
+            return None;
+        }
+        let mut z = c * u / (1.0 + q.sqrt());
+        let mut un = u;
+        for a in &self.aspheric {
+            un *= u;
+            z += a * un;
+        }
+        Some(z)
+    }
+
+    /// d(sag)/d(r²).
+    fn dsag_du(&self, u: f64) -> f64 {
+        let c = self.curvature();
+        let q = (1.0 - (1.0 + self.conic) * c * c * u).max(1e-12);
+        let mut d = c / (2.0 * q.sqrt());
+        let mut un = 1.0;
+        for (i, a) in self.aspheric.iter().enumerate() {
+            un *= u;
+            d += (i + 2) as f64 * a * un;
+        }
+        d
+    }
+
+    /// Sag at radius `r` (clamped to the domain, for drawing).
+    pub fn sag(&self, r: f64) -> f64 {
+        let mut u = r * r;
+        loop {
+            if let Some(z) = self.sag_u(u) {
+                return z;
+            }
+            u *= 0.99;
+        }
+    }
+}
+
+/// An air gap that changes with focus distance (floating elements), linear
+/// in object vergence between infinity and the close-focus distance.
+#[derive(Clone, Debug)]
+pub struct FloatingGap {
+    pub surface: usize,
+    pub at_infinity: f64,
+    pub at_close: f64,
+    pub close_distance: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -132,6 +196,7 @@ pub struct Lens {
     pub sensor_z: f64,
     pub forward_path: Vec<Event>,
     pub backward_path: Vec<Event>,
+    pub floating: Vec<FloatingGap>,
 }
 
 pub struct Paraxial {
@@ -149,10 +214,20 @@ impl Lens {
     pub fn parse(text: &str) -> Result<Lens> {
         let mut name = String::from("unnamed lens");
         let mut surfaces = Vec::new();
+        let mut floating = Vec::new();
         for (lineno, line) in text.lines().enumerate() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("@name") {
                 name = rest.trim().to_string();
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@float") {
+                // @float <row> <gap at infinity> <gap at close focus> <close distance in m>
+                let v: Vec<f64> = rest.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("line {}", lineno + 1))?;
+                if v.len() != 4 || v[0] < 1.0 {
+                    bail!("line {}: @float <row> <gap at infinity> <gap at close focus> <close distance m>", lineno + 1);
+                }
+                floating.push(FloatingGap { surface: v[0] as usize - 1, at_infinity: v[1], at_close: v[2], close_distance: v[3] * 1000.0 });
                 continue;
             }
             if line.is_empty() || line.starts_with('#') {
@@ -171,7 +246,35 @@ impl Lens {
             if is_stop && material.is_some() {
                 bail!("line {}: the stop must be in air", lineno + 1);
             }
-            surfaces.push(Surface { radius, thickness, material, semi_diameter, is_stop, z: 0.0, decenter: (0.0, 0.0) });
+            // Optional aspheric terms: k=<conic> a4=… a6=… (up to a20).
+            let mut conic = 0.0;
+            let mut aspheric = Vec::new();
+            for kv in &cols[4..] {
+                let Some((key, val)) = kv.split_once('=') else { bail!("line {}: expected key=value, got {kv}", lineno + 1) };
+                let val: f64 = val.parse().with_context(ctx)?;
+                match key.to_ascii_lowercase().as_str() {
+                    "k" => conic = val,
+                    a if a.starts_with('a') => {
+                        let order: usize = a[1..].parse().with_context(ctx)?;
+                        if order < 4 || order % 2 == 1 || order > 20 {
+                            bail!("line {}: aspheric terms are a4, a6, …, a20", lineno + 1);
+                        }
+                        let i = (order - 4) / 2;
+                        if aspheric.len() <= i {
+                            aspheric.resize(i + 1, 0.0);
+                        }
+                        aspheric[i] = val;
+                    }
+                    _ => bail!("line {}: unknown key {key}", lineno + 1),
+                }
+            }
+            if is_stop && (conic != 0.0 || !aspheric.is_empty()) {
+                bail!("line {}: the stop is flat", lineno + 1);
+            }
+            surfaces.push(Surface { radius, thickness, material, semi_diameter, is_stop, z: 0.0, decenter: (0.0, 0.0), conic, aspheric });
+        }
+        if let Some(f) = floating.iter().find(|f| f.surface >= surfaces.len()) {
+            bail!("@float row {} does not exist", f.surface + 1);
         }
         if surfaces.is_empty() || surfaces.len() > MAX_SURFACES {
             bail!("lens must have 1..={MAX_SURFACES} surfaces");
@@ -195,7 +298,30 @@ impl Lens {
             sensor_z: z,
             forward_path,
             backward_path,
+            floating,
         })
+    }
+
+    /// Recomputes vertex positions from the thicknesses.
+    fn update_positions(&mut self) {
+        let mut z = 0.0;
+        for s in self.surfaces.iter_mut() {
+            s.z = z;
+            z += s.thickness;
+        }
+    }
+
+    /// Sets the floating-element gaps for an object at `distance` mm from the
+    /// front vertex (infinity if `None`). Call before focusing.
+    pub fn set_floating(&mut self, distance: Option<f64>) {
+        if self.floating.is_empty() {
+            return;
+        }
+        for f in &self.floating {
+            let t = distance.map_or(0.0, |d| f.close_distance / d);
+            self.surfaces[f.surface].thickness = f.at_infinity + (f.at_close - f.at_infinity) * t;
+        }
+        self.update_positions();
     }
 
     /// Glass elements as ranges of surface indices (front to back).
@@ -255,7 +381,7 @@ impl Lens {
         for i in start..end {
             let s = &self.surfaces[i];
             let (n1, n2) = (m.n[i], m.n[i + 1]);
-            let c = if s.radius == 0.0 { 0.0 } else { 1.0 / s.radius };
+            let c = s.curvature();
             u = (n1 * u - y * (n2 - n1) * c) / n2;
             if i + 1 < end {
                 y += u * s.thickness;
@@ -341,6 +467,9 @@ impl Lens {
     #[inline]
     fn intersect(&self, i: usize, ray: &Ray) -> Option<(Vec3, Vec3)> {
         let s = &self.surfaces[i];
+        if s.is_aspheric() {
+            return Self::intersect_asphere(s, ray);
+        }
         if s.radius == 0.0 {
             if ray.d.z.abs() < 1e-12 {
                 return None;
@@ -368,6 +497,45 @@ impl Lens {
                 if (p.z - c.z) * r < 0.0 {
                     return Some((p, (p - c) * (1.0 / r)));
                 }
+            }
+        }
+        None
+    }
+
+    /// Newton iteration on the sag equation, starting from the base sphere.
+    fn intersect_asphere(s: &Surface, ray: &Ray) -> Option<(Vec3, Vec3)> {
+        let off = Vec3::new(s.decenter.0, s.decenter.1, s.z);
+        let o = ray.o - off;
+        let d = ray.d;
+        let c = s.curvature();
+        // Base sphere c(x²+y²+z²) − 2z = 0, stable vertex-side root (plane if c = 0).
+        let b = c * o.dot(d) - d.z;
+        let cc = c * o.dot(o) - 2.0 * o.z;
+        let disc = b * b - c * cc;
+        let mut t = if disc >= 0.0 {
+            let q = -b - b.signum() * disc.sqrt();
+            if q != 0.0 { cc / q } else { -o.z / d.z }
+        } else {
+            -o.z / d.z
+        };
+        for _ in 0..40 {
+            let p = o + d * t;
+            let u = p.x * p.x + p.y * p.y;
+            let f = p.z - s.sag_u(u)?;
+            let df = d.z - s.dsag_du(u) * 2.0 * (p.x * d.x + p.y * d.y);
+            if df == 0.0 {
+                return None;
+            }
+            let dt = f / df;
+            t -= dt;
+            if dt.abs() < 1e-12 * (1.0 + t.abs()) {
+                if t < 1e-9 {
+                    return None;
+                }
+                let p = o + d * t;
+                let g = 2.0 * s.dsag_du(p.x * p.x + p.y * p.y);
+                let n = Vec3::new(g * p.x, g * p.y, -1.0).normalize();
+                return Some((p + off, n));
             }
         }
         None
@@ -619,5 +787,57 @@ mod tests {
         coated.coating = Coating::Single { n: 1.38, lambda0: 550.0 };
         assert!(coated.reflectance(1.0, 1.5, 1.0, 550.0) < 0.015);
         assert!(coated.reflectance(1.5, 1.0, 1.0, 550.0) < 0.015);
+    }
+
+    /// The Newton asphere intersection reproduces the exact sphere solution.
+    #[test]
+    fn asphere_path_matches_sphere() {
+        let lens = Lens::parse(TRIPLET).unwrap();
+        let mut asph = lens.clone();
+        for s in asph.surfaces.iter_mut().filter(|s| !s.is_stop) {
+            s.aspheric = vec![1e-30];
+        }
+        let m = lens.media(550.0);
+        for (y, a) in [(0.5, 0.0), (3.0, 0.1), (-4.0, -0.2), (6.0, 0.3)] {
+            let ray = Ray { o: Vec3::new(0.2, y, -20.0), d: Vec3::new(0.0, a, 1.0).normalize() };
+            let p = lens.trace_forward(ray, 550.0, &m);
+            let q = asph.trace_forward(ray, 550.0, &m);
+            match (p, q) {
+                (Some((p, tp)), Some((q, tq))) => {
+                    assert!((p.o - q.o).length() < 1e-8 && (p.d - q.d).length() < 1e-10 && (tp - tq).abs() < 1e-12);
+                }
+                (None, None) => {}
+                _ => panic!("sphere and asphere paths disagree for {y} {a}"),
+            }
+        }
+    }
+
+    /// A conic with k = −1 is a paraboloid: z = c r² / 2.
+    #[test]
+    fn conic_sag() {
+        let s = Surface {
+            radius: 20.0,
+            thickness: 1.0,
+            material: None,
+            semi_diameter: 10.0,
+            is_stop: false,
+            z: 0.0,
+            decenter: (0.0, 0.0),
+            conic: -1.0,
+            aspheric: vec![1e-5],
+        };
+        let r: f64 = 8.0;
+        assert!((s.sag(r) - (r * r / 40.0 + 1e-5 * r.powi(4))).abs() < 1e-12);
+    }
+
+    /// Floating gaps interpolate in object vergence.
+    #[test]
+    fn floating_gap() {
+        let mut lens = Lens::parse(&format!("{TRIPLET}\n@float 2 6.0 7.0 0.5\n")).unwrap();
+        lens.set_floating(Some(1000.0));
+        assert!((lens.surfaces[1].thickness - 6.5).abs() < 1e-12);
+        assert!((lens.surfaces[2].z - lens.surfaces[1].z - 6.5).abs() < 1e-12);
+        lens.set_floating(None);
+        assert!((lens.surfaces[1].thickness - 6.0).abs() < 1e-12);
     }
 }

@@ -1,7 +1,7 @@
 // Spectral ray tracing through a sequential lens. Prepended with common.wgsl.
 //
-// Lens blob (`lens`): 8 words per surface (z, curvature, semi-diameter,
-// is_stop, decenter x, decenter y, -, -), then event paths of
+// Lens blob (`lens`): 16 words per surface (z, curvature, semi-diameter,
+// is_stop, decenter x, decenter y, conic, is_aspheric, A4 … A18), then event paths of
 // `path_stride` words each: [length, events...]; an event is
 // surface | forward << 8 | reflect << 9. Path 0 traces forwards, path 1
 // backwards, then the ghost paths forwards, then backwards.
@@ -77,12 +77,52 @@ fn light_spectrum(li: u32, l: f32) -> f32 {
 
 // ------------------------------------------------------------------ lens
 
-struct Surf { z: f32, c: f32, sd: f32, stop: bool, dx: f32, dy: f32 }
+struct Surf { z: f32, c: f32, sd: f32, stop: bool, dx: f32, dy: f32, k: f32, asph: bool, base: u32 }
 
 fn surf(i: u32) -> Surf {
-    let b = i * 8u;
+    let b = i * 16u;
     return Surf(bitcast<f32>(lens[b]), bitcast<f32>(lens[b + 1u]), bitcast<f32>(lens[b + 2u]),
-                lens[b + 3u] != 0u, bitcast<f32>(lens[b + 4u]), bitcast<f32>(lens[b + 5u]));
+                lens[b + 3u] != 0u, bitcast<f32>(lens[b + 4u]), bitcast<f32>(lens[b + 5u]),
+                bitcast<f32>(lens[b + 6u]), lens[b + 7u] != 0u, b + 8u);
+}
+
+// Sag of an even asphere at u = r², and d(sag)/du; x < 0 outside the conic's domain.
+fn asph_sag(s: Surf, u: f32) -> vec2<f32> {
+    let q = 1.0 - (1.0 + s.k) * s.c * s.c * u;
+    if (q < 0.0) { return vec2<f32>(0.0, -1.0); }
+    let sq = sqrt(q);
+    var z = s.c * u / (1.0 + sq);
+    var dz = s.c / (2.0 * max(sq, 1e-6));
+    var un = u;
+    var un1 = 1.0;
+    for (var j = 0u; j < 8u; j++) {
+        let a = bitcast<f32>(lens[s.base + j]);
+        un1 = un;
+        un *= u;
+        z += a * un;
+        dz += f32(j + 2u) * a * un1;
+    }
+    return vec2<f32>(z, dz);
+}
+
+// Newton iteration from the base-sphere root `t0`; returns t or −1.
+fn asph_intersect(s: Surf, p0: vec3<f32>, d: vec3<f32>, t0: f32) -> f32 {
+    var t = t0;
+    for (var it = 0; it < 16; it++) {
+        let p = p0 + d * t;
+        let u = p.x * p.x + p.y * p.y;
+        if ((1.0 + s.k) * s.c * s.c * u >= 1.0) { return -1.0; }
+        let sd = asph_sag(s, u);
+        let f = p.z - sd.x;
+        let df = d.z - sd.y * 2.0 * (p.x * d.x + p.y * d.y);
+        if (df == 0.0) { return -1.0; }
+        let dt = f / df;
+        t -= dt;
+        if (abs(dt) < 1e-6 * (1.0 + abs(t))) {
+            return select(-1.0, t, t >= 1e-5);
+        }
+    }
+    return -1.0;
 }
 
 fn iris_edge_unit(theta: f32) -> f32 {
@@ -160,17 +200,23 @@ fn trace_path(ray: ptr<function, Ray>, l: f32, path: u32) -> f32 {
         let b = s.c * dot(p0, d) - d.z;
         let cc = s.c * dot(p0, p0) - 2.0 * p0.z;
         let disc = b * b - s.c * cc;
-        if (disc < 0.0) { return -1.0; }
-        let q = -b - select(1.0, -1.0, b < 0.0) * sqrt(disc);
-        if (q == 0.0) { return -1.0; }
-        var tt = cc / q;
-        let ok1 = tt >= 1e-5 && s.c * (p0.z + d.z * tt) < 1.0;
-        if (s.c != 0.0) {
-            let t2 = q / s.c;
-            let ok2 = t2 >= 1e-5 && s.c * (p0.z + d.z * t2) < 1.0;
-            tt = select(select(-1.0, t2, ok2), select(tt, min(tt, t2), ok2), ok1);
-        } else if (!ok1) {
-            tt = -1.0;
+        let q = -b - select(1.0, -1.0, b < 0.0) * sqrt(max(disc, 0.0));
+        var tt = -1.0;
+        if (disc >= 0.0 && q != 0.0) {
+            tt = cc / q;
+            let ok1 = tt >= 1e-5 && s.c * (p0.z + d.z * tt) < 1.0;
+            if (s.c != 0.0) {
+                let t2 = q / s.c;
+                let ok2 = t2 >= 1e-5 && s.c * (p0.z + d.z * t2) < 1.0;
+                tt = select(select(-1.0, t2, ok2), select(tt, min(tt, t2), ok2), ok1);
+            } else if (!ok1) {
+                tt = -1.0;
+            }
+        }
+        if (s.asph) {
+            // Start from the base sphere's root (or the vertex plane).
+            let t0 = select(-p0.z / d.z, tt, tt >= 0.0);
+            tt = asph_intersect(s, p0, d, t0);
         }
         if (tt < 0.0) { return -1.0; }
         let pl = p0 + d * tt;
@@ -182,6 +228,10 @@ fn trace_path(ray: ptr<function, Ray>, l: f32, path: u32) -> f32 {
             continue;
         }
         var nrm = normalize(vec3<f32>(s.c * pl.x, s.c * pl.y, s.c * pl.z - 1.0));
+        if (s.asph) {
+            let g = 2.0 * asph_sag(s, pl.x * pl.x + pl.y * pl.y).y;
+            nrm = normalize(vec3<f32>(g * pl.x, g * pl.y, -1.0));
+        }
         var n1 = medium_n(i + 1u, l);
         var n2 = medium_n(i, l);
         if (fwd) { let tmp = n1; n1 = n2; n2 = tmp; }

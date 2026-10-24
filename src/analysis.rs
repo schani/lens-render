@@ -265,9 +265,7 @@ fn draw_layout(lens: &Lens, max_theta: f64, path: &str) -> Result<()> {
     let tx = |z: f64| (z - zmin) * scale;
     let ty = |y: f64| h as f64 / 2.0 - y * scale;
     c.line(tx(zmin), ty(0.0), tx(zmax), ty(0.0), [0.6, 0.6, 0.6], 1.0);
-    let sag = |s: &crate::lens::Surface, y: f64| {
-        if s.radius == 0.0 { 0.0 } else { s.radius - s.radius.signum() * (s.radius * s.radius - y * y).max(0.0).sqrt() }
-    };
+    let sag = |s: &crate::lens::Surface, y: f64| s.sag(y);
     let surf = &lens.surfaces;
     for (i, s) in surf.iter().enumerate() {
         if s.is_stop {

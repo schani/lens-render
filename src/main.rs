@@ -118,6 +118,7 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     let fstop = c.fstop.unwrap_or_else(|| lens.max_aperture());
     lens.set_aperture(fstop, c.iris_blades, c.iris_rotation_deg, c.iris_curvature)?;
     let focus = if c.focus_distance.is_finite() { Some(c.focus_distance * 1000.0) } else { None };
+    lens.set_floating(focus);
     lens.sensor_z = lens.best_focus(focus)? + c.focus_offset_mm;
 
     let w = c.width as usize;

@@ -167,7 +167,11 @@ image centre at any f-number.
  stop      3.55041     air        5.57
 ```
 
-Radius `inf` is flat; `stop` marks the iris. Materials are `air`, a
+Radius `inf` is flat; `stop` marks the iris. Aspheric surfaces take extra
+`key=value` columns: `k=<conic>` and `a4=`, `a6=`, … `a18=` for
+z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + Σ a₂ᵢ r²ⁱ. Floating elements:
+`@float <row> <gap at infinity> <gap at close focus> <close distance in m>`
+makes the thickness of that row vary linearly in object vergence. Materials are `air`, a
 catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,
 FUSED-SILICA) or `nd/vd`, e.g. `1.62041/60.32`. The last thickness is the
 nominal distance to the image plane; focusing moves the sensor.
