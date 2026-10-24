@@ -8,7 +8,6 @@ lens = "../lenses/cooke-triplet.lens"
 width = 1200
 focus_distance = 1.5
 spp = 128
-iris_blades = 6
 
 # Sign, lit by the street lamp.
 [[object]]

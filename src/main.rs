@@ -57,9 +57,9 @@ enum Cmd {
         /// Focus distance in m (infinity if absent).
         #[arg(long)]
         focus: Option<f64>,
-        /// Iris blades (0 = round).
-        #[arg(long, default_value_t = 0)]
-        blades: u32,
+        /// Iris blades (0 = round; default: the lens').
+        #[arg(long)]
+        blades: Option<u32>,
         #[arg(long, default_value_t = 21.63)]
         half_diag: f64,
         /// Published MTF data (JSON) to overlay.
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
                 Some(p) => Some(serde_json::from_str(&std::fs::read_to_string(&p)?)?),
                 None => None,
             };
-            print!("{}", mtf::run(&lens, &fstops, blades, focus.map(|f| f * 1000.0), half_diag, reference.as_ref(), &out)?);
+            print!("{}", mtf::run(&lens, &fstops, blades.unwrap_or(lens.blades), focus.map(|f| f * 1000.0), half_diag, reference.as_ref(), &out)?);
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
@@ -155,7 +155,8 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     let raw_lens = lens.clone();
     let fstop = c.fstop.unwrap_or_else(|| lens.max_aperture());
     let focus = if c.focus_distance.is_finite() { Some(c.focus_distance * 1000.0) } else { None };
-    lens.prepare(fstop, c.iris_blades, c.iris_rotation_deg, c.iris_curvature, focus, c.focus_offset_mm)?;
+    let (blades, curvature) = (c.iris_blades.unwrap_or(lens.blades), c.iris_curvature.unwrap_or(lens.blade_curvature));
+    lens.prepare(fstop, blades, c.iris_rotation_deg, curvature, focus, c.focus_offset_mm)?;
 
     let w = c.width as usize;
     let h = (c.width as f64 * c.sensor_height_mm / c.sensor_width_mm).round() as usize;

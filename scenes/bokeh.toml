@@ -8,7 +8,6 @@ lens = "../lenses/cooke-triplet.lens"
 width = 1200
 focus_distance = 0.5
 spp = 16
-iris_blades = 6
 light_samples = 8000000
 
 # Behind the focus plane.

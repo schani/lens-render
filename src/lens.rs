@@ -191,6 +191,9 @@ pub struct Lens {
     pub surfaces: Vec<Surface>,
     pub coating: Coating,
     pub iris: Iris,
+    /// The lens' iris design: blade count (0 = round) and blade curvature.
+    pub blades: u32,
+    pub blade_curvature: f64,
     pub stop_index: usize,
     /// Sensor plane position.
     pub sensor_z: f64,
@@ -215,10 +218,21 @@ impl Lens {
         let mut name = String::from("unnamed lens");
         let mut surfaces = Vec::new();
         let mut floating = Vec::new();
+        let (mut blades, mut blade_curvature) = (6, 0.0);
         for (lineno, line) in text.lines().enumerate() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("@name") {
                 name = rest.trim().to_string();
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@iris") {
+                // @iris <blades> [curvature]
+                let v: Vec<f64> = rest.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("line {}", lineno + 1))?;
+                if v.is_empty() || v.len() > 2 {
+                    bail!("line {}: @iris <blades> [curvature]", lineno + 1);
+                }
+                blades = v[0] as u32;
+                blade_curvature = v.get(1).copied().unwrap_or(0.0);
                 continue;
             }
             if let Some(rest) = line.strip_prefix("@float") {
@@ -294,6 +308,8 @@ impl Lens {
             surfaces,
             coating: Coating::Single { n: 1.38, lambda0: 550.0 },
             iris: Iris::new(0, 0.0, 0.0, stop_r, true),
+            blades,
+            blade_curvature,
             stop_index,
             sensor_z: z,
             forward_path,
@@ -847,6 +863,13 @@ mod tests {
         };
         let r: f64 = 8.0;
         assert!((s.sag(r) - (r * r / 40.0 + 1e-5 * r.powi(4))).abs() < 1e-12);
+    }
+
+    #[test]
+    fn iris_directive() {
+        let l = Lens::parse(&format!("{TRIPLET}\n@iris 11 0.5\n")).unwrap();
+        assert_eq!((l.blades, l.blade_curvature), (11, 0.5));
+        assert_eq!(Lens::parse(TRIPLET).unwrap().blades, 6);
     }
 
     /// Floating gaps interpolate in object vergence.

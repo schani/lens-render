@@ -161,7 +161,7 @@ fstop = 5.6                         # omit for wide open
 focus_distance = 2.0                # metres, or inf
 focus_offset_mm = 0.0               # manual focus shift of the sensor
 coating = "single"                  # or "none"
-iris_blades = 6
+iris_blades = 6                     # overrides the lens' @iris
 iris_rotation_deg = 0
 iris_curvature = 0.0                # 0 straight blades, 1 circular
 decenter = [[1, 0.1, 0.0]]          # element 1 (0 = front) shifted 0.1 mm in x
@@ -209,6 +209,7 @@ image centre at any f-number.
 
 ```
 @name Cooke triplet 50mm f/3.5
+@iris 6
 # radius   thickness   material   semi-diameter
  22.01359  3.25896     N-SK16     10.0
  stop      3.55041     air        5.57
@@ -218,7 +219,8 @@ Radius `inf` is flat; `stop` marks the iris. Aspheric surfaces take extra
 `key=value` columns: `k=<conic>` and `a4=`, `a6=`, … `a18=` for
 z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + Σ a₂ᵢ r²ⁱ. Floating elements:
 `@float <row> <gap at infinity> <gap at close focus> <close distance in m>`
-makes the thickness of that row vary linearly in object vergence. Materials are `air`, a
+makes the thickness of that row vary linearly in object vergence.
+`@iris <blades> [curvature]` describes the iris (default 6 straight blades). Materials are `air`, a
 catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,
 FUSED-SILICA) or `nd/vd`, e.g. `1.62041/60.32`. The last thickness is the
 nominal distance to the image plane; focusing moves the sensor.

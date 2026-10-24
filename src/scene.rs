@@ -47,12 +47,13 @@ pub struct CameraCfg {
     /// "none" (uncoated) or "single" (MgF2 quarter wave).
     #[serde(default = "d_coating")]
     pub coating: String,
-    #[serde(default = "d_blades")]
-    pub iris_blades: u32,
+    /// Overrides the lens' iris.
+    #[serde(default)]
+    pub iris_blades: Option<u32>,
     #[serde(default)]
     pub iris_rotation_deg: f64,
     #[serde(default)]
-    pub iris_curvature: f64,
+    pub iris_curvature: Option<f64>,
     /// Manufacturing error: lateral shift in mm of glass elements, `[[element, dx, dy], ...]`
     /// with elements numbered from 0 at the front.
     #[serde(default)]
@@ -99,9 +100,6 @@ fn d_inf() -> f64 {
 }
 fn d_coating() -> String {
     "single".into()
-}
-fn d_blades() -> u32 {
-    6
 }
 fn d_spp() -> u32 {
     64

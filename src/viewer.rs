@@ -131,8 +131,8 @@ impl Viewer {
             fstop,
             focus_m: focus_mm.map_or(10.0, |f| f / 1000.0),
             focus_inf: focus_mm.is_none(),
-            blades: c.iris_blades,
-            curvature: c.iris_curvature,
+            blades: c.iris_blades.unwrap_or(lens.blades),
+            curvature: c.iris_curvature.unwrap_or(lens.blade_curvature),
             rotation: c.iris_rotation_deg,
             coated: c.coating != "none",
             ghosts: c.ghosts,
@@ -184,6 +184,7 @@ impl Viewer {
         };
         if let Some(b) = &new_base {
             self.controls.fstop = self.controls.fstop.max(b.max_aperture());
+            (self.controls.blades, self.controls.curvature) = (b.blades, b.blade_curvature);
         }
         let k = self.controls.clone();
         let mut lens = new_base.clone().unwrap_or_else(|| self.base_lens.clone());

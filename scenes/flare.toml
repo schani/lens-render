@@ -8,7 +8,6 @@ lens = "../lenses/cooke-triplet.lens"
 width = 1200
 focus_distance = inf
 fstop = 8
-iris_blades = 6
 coating = "none"
 spp = 16
 ghost_grid = 512
