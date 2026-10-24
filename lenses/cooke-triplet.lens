@@ -1,0 +1,15 @@
+@name Cooke triplet 50mm f/3.5
+# Classic three-element anastigmat (positive / negative / positive):
+# N-SK16 crown singlets around an F2 flint negative, iris behind the
+# middle element. Curvatures and spacings follow the well-known 50 mm
+# f/5 textbook design; clear apertures allow f/3.5 with natural
+# mechanical vignetting towards the corners of a 36x24 frame. Units: mm.
+#
+# radius      thickness   material   semi-diameter
+  22.01359    3.25896     N-SK16     10.0
+ -435.7604    6.00755     air         9.8
+ -22.21328    0.99997     F2          6.4
+  20.29192    1.20000     air         6.0
+  stop        3.55041     air         5.57
+  79.68364    2.95208     N-SK16      8.2
+ -18.39533    42.20778    air         8.2

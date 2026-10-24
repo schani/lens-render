@@ -1,0 +1,17 @@
+# Test chart filling the frame at 2 m: shows distortion, field curvature,
+# astigmatism, coma, lateral colour and vignetting.
+background = [0.05, 0.05, 0.05]
+
+[camera]
+lens = "../lenses/cooke-triplet.lens"
+width = 1200
+focus_distance = 2.0
+spp = 64
+
+[[object]]
+type = "plane"
+center = [0, 0, 2.0]
+size = [1.5, 1.0]
+texture = { kind = "chart" }
+
+

@@ -1,0 +1,22 @@
+# A single very bright light source off axis on a black background:
+# ghost reflections between the lens surfaces (lens flare) and, stopped
+# down, the diffraction star of the iris.
+background = [0.0, 0.0, 0.0]
+
+[camera]
+lens = "../lenses/cooke-triplet.lens"
+width = 1200
+focus_distance = inf
+fstop = 8
+iris_blades = 6
+coating = "none"
+spp = 16
+ghost_grid = 512
+light_samples = 4000000
+
+[[object]]
+type = "light"
+center = [3.0, 1.6, 30.0]
+radius = 0.05
+temperature = 5500
+radiance = 200000
