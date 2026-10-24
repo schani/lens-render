@@ -1,9 +1,12 @@
 mod analysis;
 mod canvas;
 mod diffraction;
+mod fieldpsf;
+mod ghosts;
 mod glass;
 mod gpu;
 mod lens;
+mod lensedit;
 mod lensview;
 mod math;
 mod mtf;

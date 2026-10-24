@@ -3,7 +3,9 @@
 use crate::gpu::wave::WaveGpu;
 use crate::gpu::{self, GpuContext, GpuRenderer, Tonemap, wgpu};
 use crate::lens::{Coating, Lens};
-use crate::lensview::{self, LensEditor, RayPath};
+use crate::fieldpsf::FieldPsf;
+use crate::ghosts::Ghost;
+use crate::lensview::{self, Diagram, FocusTravel, GlassMap, LensEditor, PsfView, RayPath};
 use crate::math::{Ray, Vec3};
 use crate::scene::{Scene, SceneFile};
 use crate::psfbank::PsfBank;
@@ -81,6 +83,16 @@ pub struct Viewer {
     pending: Option<Lens>,
     show_lens: bool,
     by_wavelength: bool,
+    show_fans: bool,
+    show_ghosts: bool,
+    show_focus: bool,
+    diagram: Diagram,
+    glass_map: GlassMap,
+    psf_view: PsfView,
+    tab: LensTab,
+    /// Analyses of the applied lens (for `applies`), computed in the background.
+    analysis: Option<Analysis>,
+    analysis_job: Option<(u64, std::sync::mpsc::Receiver<Analysis>)>,
     save_name: String,
     /// Ray fans of the applied lens, for this many applies and colouring.
     fans: Option<(u64, bool, Vec<RayPath>)>,
@@ -117,6 +129,31 @@ pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop:
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LensTab {
+    Glass,
+    Psf,
+    Numbers,
+}
+
+/// Slower analyses of a lens, made off the UI thread.
+struct Analysis {
+    key: u64,
+    ghosts: Vec<Ghost>,
+    psfs: Vec<FieldPsf>,
+    focus: FocusTravel,
+}
+
+impl Analysis {
+    fn compute(key: u64, lens: &Lens, focus: Option<f64>, half_diag: f64) -> Analysis {
+        // Ghosts of a distant light at half the image height.
+        let ghosts = crate::psf::field_for_height(lens, 0.5 * half_diag, None)
+            .map(|th| crate::ghosts::ghosts(lens, &crate::psf::Source::at_field(lens, th, None), 550.0))
+            .unwrap_or_default();
+        Analysis { key, ghosts, psfs: crate::fieldpsf::field_psfs(lens, focus, half_diag), focus: lensview::focus_travel(lens) }
+    }
 }
 
 /// Default file name for saving an edited copy of the lens at `path`.
@@ -188,6 +225,15 @@ impl Viewer {
             pending: None,
             show_lens: true,
             by_wavelength: false,
+            show_fans: true,
+            show_ghosts: false,
+            show_focus: false,
+            diagram: Diagram::default(),
+            glass_map: GlassMap::default(),
+            psf_view: PsfView::default(),
+            tab: LensTab::Glass,
+            analysis: None,
+            analysis_job: None,
             fans: None,
             applies: 0,
             frame_ms: 0.0,
@@ -388,62 +434,131 @@ impl Viewer {
         }
     }
 
-    /// The lens panel: cross-section with ray fans, and the prescription.
+    /// Applies an edited draft (or reports why it is invalid).
+    fn edited(&mut self) {
+        match Lens::parse(&self.editor.draft.to_text()) {
+            Ok(l) => {
+                self.editor.error.clear();
+                self.pending = Some(l);
+                self.controls.revision += 1;
+            }
+            Err(e) => self.editor.error = format!("{e:#}"),
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(l) = self.diagram.undo.pop() {
+            self.editor.draft = l;
+            self.edited();
+        }
+    }
+
+    /// The lens panel: interactive cross-section, analyses and the prescription.
     fn lens_ui(&mut self, ui: &mut egui::Ui) {
         let c = &self.file.camera;
         let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
+        let k = self.applied.clone().unwrap_or(self.controls.clone());
+        let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
         let key = (self.applies, self.by_wavelength);
         if self.fans.as_ref().map(|f| (f.0, f.1)) != Some(key) {
-            let k = self.applied.as_ref().unwrap_or(&self.controls);
-            let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
             self.fans = Some((key.0, key.1, lensview::trace_fans(&self.lens, focus, half_diag, self.by_wavelength)));
         }
+        if let Some((_, rx)) = &self.analysis_job {
+            if let Ok(a) = rx.try_recv() {
+                self.analysis = Some(a);
+                self.analysis_job = None;
+            }
+        }
+        if self.analysis_job.is_none() && self.analysis.as_ref().map(|a| a.key) != Some(self.applies) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (lens, applies) = (self.lens.clone(), self.applies);
+            std::thread::spawn(move || {
+                let _ = tx.send(Analysis::compute(applies, &lens, focus, half_diag));
+            });
+            self.analysis_job = Some((applies, rx));
+        }
+        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+            self.undo();
+        }
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.show_fans, "rays").on_hover_text("ray fans for image heights 0, 0.7 and 1 (green, red, blue); × where a ray is blocked");
+            ui.checkbox(&mut self.by_wavelength, "by wavelength");
+            ui.checkbox(&mut self.show_ghosts, "ghosts").on_hover_text("the three strongest ghosts of a distant light at half the image height");
+            ui.checkbox(&mut self.show_focus, "focus travel").on_hover_text("the lens focused at ∞ and at its closest distance, aligned on the sensor");
+            ui.separator();
+            if ui.add_enabled(!self.diagram.undo.is_empty(), egui::Button::new("Undo")).clicked() {
+                self.undo();
+            }
+            if ui.button("Revert").on_hover_text("reload the lens file").clicked() {
+                match Lens::load(self.lens_path.to_str().unwrap_or_default()) {
+                    Ok(l) => {
+                        self.diagram.undo.push(self.editor.draft.clone());
+                        self.editor.draft = l;
+                        self.edited();
+                    }
+                    Err(e) => self.status = format!("{e:#}"),
+                }
+            }
+            ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(150.0));
+            if ui.button("Save as").clicked() {
+                let path = self.lens_path.with_file_name(&self.save_name);
+                match std::fs::write(&path, self.editor.draft.to_text()) {
+                    Ok(()) => {
+                        self.status = format!("wrote {}", path.display());
+                        self.lens_files = lens_files(&path);
+                        self.lens_path = path.clone();
+                        self.controls.lens = path;
+                    }
+                    Err(e) => self.status = format!("save failed: {e}"),
+                }
+            }
+            if !self.editor.error.is_empty() {
+                ui.colored_label(egui::Color32::RED, &self.editor.error);
+            }
+        });
         let h = ui.available_height();
         let w = ui.available_width();
+        let taken = self.analysis.take();
+        let analysis = taken.as_ref().filter(|a| a.key == self.applies);
         ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(egui::vec2(w * 0.5, h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Ray fans for image heights 0, 0.7 and 1 (green, red, blue); × where a ray is blocked.");
-                    ui.checkbox(&mut self.by_wavelength, "colour by wavelength");
-                });
-                lensview::diagram(ui, &self.lens, &self.fans.as_ref().unwrap().2, half_diag);
+            ui.allocate_ui_with_layout(egui::vec2(w * 0.55, h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                let overlays = lensview::Overlays {
+                    fans: self.show_fans.then(|| self.fans.as_ref().unwrap().2.as_slice()),
+                    ghosts: analysis.filter(|_| self.show_ghosts).map(|a| &a.ghosts[..a.ghosts.len().min(3)]),
+                    focus: analysis.filter(|_| self.show_focus).map(|a| &a.focus),
+                };
+                if self.diagram.ui(ui, &self.lens, &mut self.editor.draft, &overlays, half_diag) {
+                    self.edited();
+                }
             });
             ui.separator();
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("Revert").on_hover_text("reload the lens file").clicked() {
-                        match Lens::load(self.lens_path.to_str().unwrap_or_default()) {
-                            Ok(l) => {
-                                self.editor = LensEditor::new(&l);
-                                self.pending = Some(l);
-                                self.controls.revision += 1;
-                            }
-                            Err(e) => self.status = format!("{e:#}"),
-                        }
-                    }
-                    ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(160.0));
-                    if ui.button("Save as").clicked() {
-                        let path = self.lens_path.with_file_name(&self.save_name);
-                        match std::fs::write(&path, self.editor.draft.to_text()) {
-                            Ok(()) => {
-                                self.status = format!("wrote {}", path.display());
-                                self.lens_files = lens_files(&path);
-                                self.lens_path = path.clone();
-                                self.controls.lens = path;
-                            }
-                            Err(e) => self.status = format!("save failed: {e}"),
-                        }
+                    for (t, label) in [(LensTab::Glass, "Glass"), (LensTab::Psf, "PSF"), (LensTab::Numbers, "Numbers")] {
+                        ui.selectable_value(&mut self.tab, t, label);
                     }
                 });
-                if let Some(l) = self.editor.ui(ui) {
-                    self.pending = Some(l);
-                    self.controls.revision += 1;
-                }
-                if !self.editor.error.is_empty() {
-                    ui.colored_label(egui::Color32::RED, &self.editor.error);
+                ui.separator();
+                match self.tab {
+                    LensTab::Glass => {
+                        if self.glass_map.ui(ui, &mut self.editor.draft, self.diagram.selected, &mut self.diagram.undo) {
+                            self.edited();
+                        }
+                    }
+                    LensTab::Psf => self.psf_view.ui(ui, analysis.map(|a| (a.key, a.psfs.as_slice()))),
+                    LensTab::Numbers => {
+                        let before = self.editor.draft.clone();
+                        if let Some(l) = self.editor.ui(ui) {
+                            self.diagram.undo.push(before);
+                            self.pending = Some(l);
+                            self.controls.revision += 1;
+                        }
+                    }
                 }
             });
         });
+        self.analysis = taken;
     }
 
     fn save(&mut self, path: &str) -> Result<()> {
@@ -486,6 +601,16 @@ impl eframe::App for Viewer {
                     self.editor.draft.surfaces[0].radius *= 1.2;
                     self.pending = Lens::parse(&self.editor.draft.to_text()).ok();
                     self.controls.revision += 1;
+                }
+                // Overlays, a selection, and the tab named by LENS_VIEWER_TAB.
+                55 => {
+                    (self.show_ghosts, self.show_focus) = (true, true);
+                    self.diagram.selected = Some(0);
+                    self.tab = match std::env::var("LENS_VIEWER_TAB").as_deref() {
+                        Ok("glass") => LensTab::Glass,
+                        Ok("numbers") => LensTab::Numbers,
+                        _ => LensTab::Psf,
+                    };
                 }
                 _ => {}
             }
@@ -547,7 +672,9 @@ impl eframe::App for Viewer {
         }
         if let Some((n, path)) = self.shot.clone() {
             // With wave optics, wait until the PSF bank is in use.
-            let bank_ready = !self.controls.wave || (self.bank_job.is_none() && self.bank.is_some());
+            let bank_ready = (!self.controls.wave || (self.bank_job.is_none() && self.bank.is_some()))
+                && (!self.show_lens || self.analysis.as_ref().is_some_and(|a| a.key == self.applies))
+                && self.updates > 60;
             if frames >= n && bank_ready && self.shot.is_some() {
                 self.shot = None;
                 let ctx = ui.ctx().clone();

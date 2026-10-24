@@ -418,20 +418,29 @@ impl Lens {
     /// the ray leaving the lens if it gets through (if not, the last point is
     /// where it is blocked).
     pub fn trace_points(&self, ray: Ray, l: f64) -> (Vec<Vec3>, Option<Ray>) {
+        let (pts, out) = self.trace_path_points(ray, l, &self.forward_path);
+        (pts, out.map(|(r, _)| r))
+    }
+
+    /// Like `trace_points` along any event path (e.g. a ghost), also
+    /// returning the throughput.
+    pub fn trace_path_points(&self, ray: Ray, l: f64, path: &[Event]) -> (Vec<Vec3>, Option<(Ray, f64)>) {
         let m = self.media(l);
         let mut pts = vec![ray.o];
         let mut cur = ray;
-        for ev in &self.forward_path {
-            let Some((r, _, _)) = self.trace_path_opl(cur, l, &m, std::slice::from_ref(ev), false) else { return (pts, None) };
+        let mut throughput = 1.0;
+        for ev in path {
+            let Some((r, t, _)) = self.trace_path_opl(cur, l, &m, std::slice::from_ref(ev), false) else { return (pts, None) };
             pts.push(r.o);
             let s = &self.surfaces[ev.surface as usize];
             let (x, y) = (r.o.x - s.decenter.0, r.o.y - s.decenter.1);
             if x * x + y * y > s.semi_diameter * s.semi_diameter || (s.is_stop && !self.iris.contains(x, y)) {
                 return (pts, None);
             }
+            throughput *= t;
             cur = r;
         }
-        (pts, Some(cur))
+        (pts, Some((cur, throughput)))
     }
 
     pub fn load(path: &str) -> Result<Lens> {

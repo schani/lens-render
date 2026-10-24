@@ -147,6 +147,23 @@ pub fn meridional_fan(lens: &Lens, src: &Source, count: usize, spread: f64) -> O
     Some((0..count).map(|k| src.ray_through(q + dir * (r * (2.0 * k as f64 / (count - 1).max(1) as f64 - 1.0))).0).collect())
 }
 
+/// Rays from `src` through a g × g grid over a disk of `spread` times the
+/// entrance pupil radius around the chief ray (aimed at the d line).
+pub fn pupil_rays(lens: &Lens, src: &Source, g: usize, spread: f64) -> Option<Vec<Ray>> {
+    let m = lens.media(LAMBDA_D);
+    let par = lens.paraxial_data(LAMBDA_D);
+    let q = aim_chief(lens, src, LAMBDA_D, &m, par.entrance_pupil_z)?;
+    let r = spread * lens.iris.max_radius / par.entrance_pupil_mag;
+    let cell = 2.0 * r / g as f64;
+    Some(
+        (0..g * g)
+            .map(|k| (-r + ((k % g) as f64 + 0.5) * cell, -r + ((k / g) as f64 + 0.5) * cell))
+            .filter(|(x, y)| x * x + y * y <= r * r)
+            .map(|(x, y)| src.ray_through(q + Vec3::new(x, y, 0.0)).0)
+            .collect(),
+    )
+}
+
 /// Field angle whose chief ray lands at image height `h` (mm, along +y).
 pub fn field_for_height(lens: &Lens, h: f64, distance: Option<f64>) -> Option<f64> {
     if h == 0.0 {
@@ -516,7 +533,6 @@ impl Wavefront {
     }
 
     /// RMS wavefront error in waves (piston removed), over the open pupil.
-    #[allow(dead_code)]
     pub fn rms_waves(&self) -> f64 {
         let w: Vec<f64> = self.samples.iter().flatten().map(|(_, o)| o / (self.lambda * 1e-6)).collect();
         let mean = w.iter().sum::<f64>() / w.len() as f64;
