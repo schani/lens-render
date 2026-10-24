@@ -44,8 +44,10 @@ pub struct Viewer {
     status: String,
     frame_ms: f64,
     last_frame: Instant,
-    /// Self-check: after this many frames, screenshot the window to LENS_VIEWER_SHOT and quit.
+    /// Self-check: change controls along the way, then after this many frames
+    /// screenshot the window to LENS_VIEWER_SHOT and quit.
     shot: Option<(u32, String)>,
+    updates: u32,
 }
 
 use eframe::egui_wgpu;
@@ -110,6 +112,7 @@ impl Viewer {
             frame_ms: 0.0,
             last_frame: Instant::now(),
             shot: std::env::var("LENS_VIEWER_SHOT").ok().map(|p| (32, p)),
+            updates: 0,
         }
     }
 
@@ -233,6 +236,23 @@ impl Viewer {
 
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.updates += 1;
+        if self.shot.is_some() {
+            // Exercise lens and resolution changes before the screenshot.
+            match self.updates {
+                5 => self.controls.fstop = 8.0,
+                10 => self.controls.blades = 0,
+                15 => self.controls.width = 720,
+                20 => self.controls.focus_inf = true,
+                25 => {
+                    self.controls.width = 1200;
+                    self.controls.blades = 5;
+                    self.controls.fstop = 11.0;
+                    self.controls.focus_inf = false;
+                }
+                _ => {}
+            }
+        }
         egui::Panel::left("controls").exact_size(300.0).show(ui, |ui| self.controls_ui(ui));
         if self.applied.as_ref() != Some(&self.controls) {
             if let Err(e) = self.apply() {
