@@ -63,6 +63,10 @@ pub struct CameraCfg {
     pub exposure_ev: f64,
     #[serde(default = "d_true")]
     pub diffraction: bool,
+    /// Image formation through wave-optical PSFs (diffraction and aberrations
+    /// together) instead of geometric rays plus an iris diffraction pattern.
+    #[serde(default)]
+    pub wave_optics: bool,
     #[serde(default = "d_true")]
     pub ghosts: bool,
     /// Forward samples per light for the direct image.

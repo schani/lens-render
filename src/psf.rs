@@ -44,6 +44,20 @@ impl Source {
         }
     }
 
+    /// Like `at_field`, with the chief ray's image at azimuth `alpha` (radians,
+    /// measured in the sensor plane from +x; `at_field` is alpha = π/2).
+    pub fn at(lens: &Lens, theta: f64, alpha: f64, distance: Option<f64>) -> Source {
+        let (s, c) = alpha.sin_cos();
+        match distance {
+            None => Source::Infinity(Vec3::new(theta.sin() * c, theta.sin() * s, theta.cos())),
+            Some(d) => {
+                let z_ep = lens.paraxial_data(LAMBDA_D).entrance_pupil_z;
+                let r = (z_ep + d) * theta.tan();
+                Source::Point(Vec3::new(-r * c, -r * s, -d))
+            }
+        }
+    }
+
     /// Ray from the source through `q`, and the optical path from the
     /// source's wavefront (point, or plane through the origin) to its origin.
     fn ray_through(&self, q: Vec3) -> (Ray, f64) {
@@ -65,14 +79,14 @@ pub struct Wavefront {
     pub du: f64,
     /// Row-major n × n: (amplitude, OPD in mm), None where blocked.
     pub samples: Vec<Option<(f64, f64)>>,
-    /// Exit direction cosines ≈ c0 + a · (u, v), (u, v) from the grid centre.
-    pub c0: [f64; 2],
+    /// Exit direction cosines ≈ const + a · (u, v), (u, v) from the grid centre.
     pub a: [[f64; 2]; 2],
     /// Chief ray's point on the sensor plane (sensor coordinates, mm).
     pub reference: [f64; 2],
     /// Σ transmittance · du² (relative illumination × pupil area).
     pub power: f64,
     /// Geometric ray hits on the sensor, relative to `reference`.
+    #[allow(dead_code)]
     pub spot: Vec<[f64; 2]>,
 }
 
@@ -286,7 +300,6 @@ impl Wavefront {
             n,
             du,
             samples,
-            c0: [fl[0], fm[0]],
             a: [[fl[1], fl[2]], [fm[1], fm[2]]],
             reference: [centre.x, centre.y],
             power,
@@ -295,6 +308,7 @@ impl Wavefront {
     }
 
     /// RMS wavefront error in waves (piston removed), over the open pupil.
+    #[allow(dead_code)]
     pub fn rms_waves(&self) -> f64 {
         let w: Vec<f64> = self.samples.iter().flatten().map(|(_, o)| o / (self.lambda * 1e-6)).collect();
         let mean = w.iter().sum::<f64>() / w.len() as f64;

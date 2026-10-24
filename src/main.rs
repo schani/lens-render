@@ -8,6 +8,7 @@ mod math;
 mod mtf;
 mod plot;
 mod psf;
+mod psfbank;
 mod render;
 mod scene;
 mod spectrum;
@@ -185,7 +186,25 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
         let mut g = gpu::GpuRenderer::new(ctx);
         g.set_scene(&scene);
         let settings = gpu_settings(&file, w, h, norm);
-        g.configure(&lens, &settings)?;
+        let bank = if c.wave_optics {
+            let tb = Instant::now();
+            let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
+            let b = psfbank::PsfBank::build(&lens, focus, c.spectral_bins, pitch, half_diag, &|_| {});
+            eprintln!(
+                "  PSF bank: {} PSFs ({}×{}×{}×{} bins), kernels {}² px, built in {:.1} s",
+                b.refs.len(),
+                b.n_theta,
+                b.n_verg,
+                b.n_az,
+                b.bins,
+                2 * b.half + 1,
+                tb.elapsed().as_secs_f64()
+            );
+            Some(b)
+        } else {
+            None
+        };
+        g.configure(&lens, &settings, bank.as_ref())?;
         g.wait()?;
         let t1 = Instant::now();
         eprintln!("  GPU setup {:.0} ms", (t1 - t0).as_secs_f64() * 1000.0);
@@ -232,7 +251,8 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
         }
         film
     };
-    if c.diffraction && !gpu_diffracted {
+    // Wave-optical PSFs include diffraction.
+    if c.diffraction && !gpu_diffracted && !c.wave_optics {
         let t2 = Instant::now();
         diffraction::apply(&mut film, &lens.iris, lens.surfaces[lens.stop_index].semi_diameter, lens.working_fnumber(), pitch);
         eprintln!("  diffraction done in {:.1}s", t2.elapsed().as_secs_f64());

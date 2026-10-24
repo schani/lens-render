@@ -16,7 +16,10 @@ struct Params {
     light_base: u32, bg_r: f32, bg_g: f32, bg_b: f32,
     m0: f32, m1: f32, m2: f32, m3: f32,
     m4: f32, m5: f32, m6: f32, m7: f32,
-    m8: f32, exposure: f32, n_tasks: u32, _p2: u32,
+    m8: f32, exposure: f32, n_tasks: u32, bank_layout_off: u32,
+    bank_on: u32, bank_nt: u32, bank_nv: u32, bank_na: u32,
+    bank_half: u32, bank_refs_off: u32, bank_cdf_off: u32, psf_margin: u32,
+    bank_tan_max: f32, bank_v0: f32, bank_dv: f32, bank_period: f32,
 }
 
 const LAMBDA_MIN: f32 = 380.0;

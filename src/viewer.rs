@@ -144,7 +144,7 @@ impl Viewer {
             ghost_wavelengths: 4,
             tonemap: Tonemap::Clip,
         };
-        self.renderer.configure(&lens, &settings)?;
+        self.renderer.configure(&lens, &settings, None)?;
         self.lens = lens;
         self.applied = Some(k);
         Ok(())

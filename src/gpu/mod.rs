@@ -78,7 +78,19 @@ struct Params {
     m: [f32; 9],
     exposure: f32,
     n_tasks: u32,
-    _pad: u32,
+    bank_layout_off: u32,
+    bank_on: u32,
+    bank_nt: u32,
+    bank_nv: u32,
+    bank_na: u32,
+    bank_half: u32,
+    bank_refs_off: u32,
+    bank_cdf_off: u32,
+    psf_margin: u32,
+    bank_tan_max: f32,
+    bank_v0: f32,
+    bank_dv: f32,
+    bank_period: f32,
 }
 
 /// Device and queue, either our own (headless) or borrowed from the viewer.
@@ -119,8 +131,12 @@ fn shader_source(device: &wgpu::Device, body: &str) -> String {
     };
     let low_add = add.replace("film[", "lowres[");
     let low_load = load.replace("film[", "lowres[");
+    let job_add = add.replace("film[", "job_flux[");
+    let job_load = load.replace("film[i]", "job_flux[jidx]");
     format!("{}\n{}", include_str!("common.wgsl"), body)
         .replace("FILM_ATOMIC", ty)
+        .replace("JOB_FLUX_ADD", &job_add)
+        .replace("JOB_FLUX_LOAD", &job_load)
         .replace("LOWRES_ADD", &low_add)
         .replace("LOWRES_LOAD", &low_load)
         .replace("FILM_ADD", add)
@@ -184,6 +200,7 @@ pub struct GpuRenderer {
     surfaces_pl: wgpu::ComputePipeline,
     veil_pl: wgpu::ComputePipeline,
     light_grid_pl: wgpu::ComputePipeline,
+    psf_splat_pl: wgpu::ComputePipeline,
     pupil_bounds_pl: wgpu::ComputePipeline,
     light_bounds_pl: wgpu::ComputePipeline,
     normalize_pl: wgpu::ComputePipeline,
@@ -192,6 +209,7 @@ pub struct GpuRenderer {
     params_buf: wgpu::Buffer,
     bounds_buf: wgpu::Buffer,
     jobs_buf: wgpu::Buffer,
+    job_flux_buf: wgpu::Buffer,
     jobs_cap: usize,
     static_bufs: Option<[wgpu::Buffer; 4]>,
     film_buf: Option<wgpu::Buffer>,
@@ -307,7 +325,7 @@ impl GpuRenderer {
         });
         let g1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("film"),
-            entries: &[storage_entry(0, false), storage_entry(1, false)],
+            entries: &[storage_entry(0, false), storage_entry(1, false), storage_entry(2, false)],
         });
         let g2 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("output"),
@@ -359,10 +377,12 @@ impl GpuRenderer {
         });
         let jobs_cap = 1024;
         let jobs_buf = Self::make_jobs_buf(device, jobs_cap);
+        let job_flux_buf = Self::make_flux_buf(device, jobs_cap);
         GpuRenderer {
             surfaces_pl: pipeline(&trace_layout, &trace, "surfaces"),
             veil_pl: pipeline(&trace_layout, &trace, "veil"),
             light_grid_pl: pipeline(&trace_layout, &trace, "light_grid"),
+            psf_splat_pl: pipeline(&trace_layout, &trace, "psf_splat"),
             pupil_bounds_pl: pipeline(&trace_layout, &trace, "pupil_bounds"),
             light_bounds_pl: pipeline(&trace_layout, &trace, "light_bounds"),
             normalize_pl: pipeline(&resolve_layout, &resolve, "normalize_film"),
@@ -371,6 +391,7 @@ impl GpuRenderer {
             params_buf,
             bounds_buf,
             jobs_buf,
+            job_flux_buf,
             jobs_cap,
             static_bufs: None,
             film_buf: None,
@@ -397,10 +418,48 @@ impl GpuRenderer {
         }
     }
 
+    fn make_flux_buf(device: &wgpu::Device, cap: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("job flux"),
+            size: (cap * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn make_g0(&self) -> wgpu::BindGroup {
+        let bufs = self.static_bufs.as_ref().unwrap();
+        self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layouts[0],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bufs[0].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: bufs[1].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: bufs[2].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: bufs[3].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.bounds_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: self.jobs_buf.as_entire_binding() },
+            ],
+        })
+    }
+
+    fn make_g1(&self) -> wgpu::BindGroup {
+        self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layouts[1],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.film_buf.as_ref().unwrap().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.lowres_buf.as_ref().unwrap().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.job_flux_buf.as_entire_binding() },
+            ],
+        })
+    }
+
     fn make_jobs_buf(device: &wgpu::Device, cap: usize) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("jobs"),
-            size: (cap * 48) as u64,
+            size: (cap * 64) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -485,7 +544,9 @@ impl GpuRenderer {
     }
 
     /// Uploads the lens and settings, recomputes pupil bounds and restarts accumulation.
-    pub fn configure(&mut self, lens: &Lens, s: &Settings) -> Result<()> {
+    /// With `bank`, scene points within its range are imaged through
+    /// wave-optical PSFs (see `crate::psfbank`).
+    pub fn configure(&mut self, lens: &Lens, s: &Settings, bank: Option<&crate::psfbank::PsfBank>) -> Result<()> {
         if s.bins > MAX_BINS || s.light_grid % 16 != 0 || s.light_grid == 0 {
             bail!("unsupported settings: at most {MAX_BINS} bins, light grid a multiple of 16");
         }
@@ -531,6 +592,11 @@ impl GpuRenderer {
             p.resize(stride, 0);
             lens_blob.extend(p);
         }
+        // PSF bank kernel layout (half size, cells per pixel, CDF offset) per entry.
+        let bank_layout_off = lens_blob.len();
+        if let Some(b) = bank {
+            lens_blob.extend(b.layout.iter().flatten());
+        }
 
         // Tables: media, upsampling, per-bin CMF, light spectra, palettes.
         let mut tables: Vec<f32> = Vec::new();
@@ -561,6 +627,17 @@ impl GpuRenderer {
         tables.extend(&scene.spectra);
         let palette_off = tables.len();
         tables.extend(&scene.palettes);
+        let bank_refs_off = tables.len();
+        if let Some(b) = bank {
+            if b.bins != s.bins || (b.pitch - s.sensor_w / s.w as f64).abs() > 1e-9 {
+                bail!("PSF bank was built for other bins or pixel pitch");
+            }
+            tables.extend(&b.refs);
+        }
+        let bank_cdf_off = tables.len();
+        if let Some(b) = bank {
+            tables.extend(&b.cdf);
+        }
 
         let mut scene_blob = scene.rects.clone();
         let light_base = scene_blob.len();
@@ -692,32 +769,24 @@ impl GpuRenderer {
             // Display exposure survives reconfiguration (1 until set).
             exposure: if self.params.exposure > 0.0 { self.params.exposure } else { 1.0 },
             n_tasks: 0,
-            _pad: 0,
+            bank_layout_off: bank_layout_off as u32,
+            bank_on: bank.is_some() as u32,
+            bank_nt: bank.map_or(1, |b| b.n_theta as u32),
+            bank_nv: bank.map_or(1, |b| b.n_verg as u32),
+            bank_na: bank.map_or(1, |b| b.n_az as u32),
+            bank_half: bank.map_or(0, |b| b.half as u32),
+            bank_refs_off: bank_refs_off as u32,
+            bank_cdf_off: bank_cdf_off as u32,
+            psf_margin: bank.map_or(0, |b| b.half as u32),
+            bank_tan_max: bank.map_or(1.0, |b| b.tan_max as f32),
+            bank_v0: bank.map_or(0.0, |b| b.verg0 as f32),
+            bank_dv: bank.map_or(1.0, |b| b.dverg.max(1e-12) as f32),
+            bank_period: bank.map_or(1.0, |b| b.period as f32),
         };
 
-        let g0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.layouts[0],
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: bufs[0].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: bufs[1].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: bufs[2].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: bufs[3].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.bounds_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.jobs_buf.as_entire_binding() },
-            ],
-        });
-        self.g0 = Some(g0);
         self.static_bufs = Some(bufs);
-        self.g1 = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.layouts[1],
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.film_buf.as_ref().unwrap().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.lowres_buf.as_ref().unwrap().as_entire_binding() },
-            ],
-        }));
+        self.g0 = Some(self.make_g0());
+        self.g1 = Some(self.make_g1());
         let view = self.texture.as_ref().unwrap().create_view(&Default::default());
         self.g2 = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -771,7 +840,7 @@ impl GpuRenderer {
     /// light the direct image in every wavelength bin (grid sized to its
     /// footprint), plus ghosts for lights bright enough, with fresh jitter.
     /// Ghosts may use fewer, stratified wavelengths, weighted to stay unbiased.
-    fn tasks(&self) -> Vec<[u32; 12]> {
+    fn tasks(&self) -> Vec<[u32; 16]> {
         let s = self.settings.as_ref().unwrap();
         let scene = self.scene.as_ref().unwrap();
         let max_power = scene.power.iter().cloned().fold(0.0, f64::max);
@@ -799,6 +868,7 @@ impl GpuRenderer {
                     let path_index = if path == 0 { 0 } else { 1 + path as u32 };
                     let weight = s.bins as f32 / samples as f32;
                     let f = [u - bin as f32, ex as f32, ey as f32, r(), r(), weight];
+                    let first = tasks.len() as u32;
                     for tile in 0..(grid / 16) * (grid / 16) {
                         tasks.push([
                             li as u32,
@@ -813,6 +883,10 @@ impl GpuRenderer {
                             f[5].to_bits(),
                             tile,
                             grid,
+                            first,
+                            0,
+                            0,
+                            0,
                         ]);
                     }
                 }
@@ -846,21 +920,9 @@ impl GpuRenderer {
         if jobs.len() > self.jobs_cap {
             self.jobs_cap = jobs.len().next_power_of_two();
             self.jobs_buf = Self::make_jobs_buf(&self.ctx.device, self.jobs_cap);
-            // Rebind the static group with the new jobs buffer.
-            let bufs = self.static_bufs.as_ref().unwrap();
-            self.g0 = Some(self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.layouts[0],
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.params_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: bufs[0].as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: bufs[1].as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: bufs[2].as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: bufs[3].as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: self.bounds_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 6, resource: self.jobs_buf.as_entire_binding() },
-                ],
-            }));
+            self.job_flux_buf = Self::make_flux_buf(&self.ctx.device, self.jobs_cap);
+            self.g0 = Some(self.make_g0());
+            self.g1 = Some(self.make_g1());
         }
         if !jobs.is_empty() {
             self.ctx.queue.write_buffer(&self.jobs_buf, 0, bytemuck::cast_slice(&jobs));
@@ -870,13 +932,17 @@ impl GpuRenderer {
         p.n_tasks = jobs.len() as u32;
         self.ctx.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&p));
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        if p.bank_on != 0 && !jobs.is_empty() {
+            enc.clear_buffer(&self.job_flux_buf, 0, Some(jobs.len() as u64 * 4));
+        }
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_bind_group(0, self.g0.as_ref(), &[]);
             pass.set_bind_group(1, self.g1.as_ref(), &[]);
             if surfaces {
                 pass.set_pipeline(&self.surfaces_pl);
-                pass.dispatch_workgroups(p.w.div_ceil(8), p.h.div_ceil(8), 1);
+                let m = 2 * p.psf_margin;
+                pass.dispatch_workgroups((p.w + m).div_ceil(8), (p.h + m).div_ceil(8), 1);
                 if p.veil != 0 {
                     pass.set_pipeline(&self.veil_pl);
                     pass.dispatch_workgroups(p.w.div_ceil(4).div_ceil(8), p.h.div_ceil(4).div_ceil(8), 1);
@@ -886,6 +952,10 @@ impl GpuRenderer {
                 pass.set_pipeline(&self.light_grid_pl);
                 let n = jobs.len() as u32;
                 pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
+                if p.bank_on != 0 {
+                    pass.set_pipeline(&self.psf_splat_pl);
+                    pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
+                }
             }
         }
         self.in_flight.push_back(self.ctx.queue.submit([enc.finish()]));
@@ -925,7 +995,8 @@ impl GpuRenderer {
     /// Normalises the film, optionally applies diffraction, and converts it
     /// to the display texture. Returns whether diffraction was applied.
     pub fn resolve(&mut self, diffraction: bool) -> Result<bool> {
-        let diffract = diffraction && self.prepare_diffraction()?;
+        // With the PSF bank, diffraction is part of the wave-optical PSFs.
+        let diffract = diffraction && self.params.bank_on == 0 && self.prepare_diffraction()?;
         let mut p = self.params;
         p.frames = self.frames.max(1) as f32;
         self.ctx.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&p));
@@ -1043,7 +1114,7 @@ mod tests {
         let ctx = GpuContext::headless().ok()?;
         let mut g = GpuRenderer::new(ctx);
         g.set_scene(scene);
-        g.configure(lens, s).unwrap();
+        g.configure(lens, s, None).unwrap();
         for _ in 0..frames {
             g.render_frame();
         }
@@ -1201,7 +1272,7 @@ mod tests {
             let s = settings(w, h, bins, false);
             let mut g = GpuRenderer::new(ctx.clone());
             g.set_scene(&scene);
-            g.configure(&lens, &s).unwrap();
+            g.configure(&lens, &s, None).unwrap();
             // Faint background, a few points of very different brightness.
             let mut film = Film::new(w, h, bins);
             for (i, v) in film.data.iter_mut().enumerate() {
@@ -1252,7 +1323,7 @@ mod tests {
         let s = settings(120, 80, 8, true);
         let mut g = GpuRenderer::new(ctx);
         g.set_scene(&scene);
-        g.configure(&lens, &s).unwrap();
+        g.configure(&lens, &s, None).unwrap();
         for _ in 0..256 {
             g.render_frame();
         }
@@ -1289,7 +1360,7 @@ mod tests {
         let s = settings(120, 80, 8, true);
         let mut g = GpuRenderer::new(ctx);
         g.set_scene(&scene);
-        g.configure(&lens, &s).unwrap();
+        g.configure(&lens, &s, None).unwrap();
         for _ in 0..128 {
             g.render_frame();
         }
@@ -1315,7 +1386,7 @@ mod tests {
         let mut g = GpuRenderer::new(ctx);
         for _ in 0..2 {
             g.set_scene(&scene);
-            g.configure(&lens, &s).unwrap();
+            g.configure(&lens, &s, None).unwrap();
             for _ in 0..4 {
                 g.render_frame();
             }
@@ -1344,7 +1415,7 @@ mod tests {
         let s = settings(120, 80, 8, true);
         let mut g = GpuRenderer::new(ctx);
         g.set_scene(&scene);
-        g.configure(&lens, &s).unwrap();
+        g.configure(&lens, &s, None).unwrap();
         for _ in 0..256 {
             g.render_frame();
         }
@@ -1360,5 +1431,101 @@ mod tests {
         println!("asphere: total gpu {tg} cpu {tc}, block diff {d}");
         assert!((tg - tc).abs() / tc < 0.01);
         assert!(d < 0.03);
+    }
+
+    /// Imaging through the wave-optical PSF bank conserves energy and agrees
+    /// with geometric rendering at a scale above the PSF size.
+    #[test]
+    fn wave_optics_matches_geometric_energy() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let mut lens = lens(5.6, Some(2000.0));
+        lens.coating = Coating::None;
+        let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 700.0)], lights: vec![], background: [0.02, 0.02, 0.02] };
+        let s = settings(120, 80, 8, false);
+        let pitch = 36.0 / 120.0;
+        let bank = crate::psfbank::PsfBank::build(&lens, Some(2000.0), 8, pitch, 21.63, &|_| {});
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        let mut film = |b: Option<&crate::psfbank::PsfBank>| {
+            g.configure(&lens, &s, b).unwrap();
+            for _ in 0..256 {
+                g.render_frame();
+            }
+            g.resolve(false).unwrap();
+            g.read_film().unwrap()
+        };
+        let geo = film(None);
+        let wave = film(Some(&bank));
+        let (tg, tw) = (total(&geo), total(&wave));
+        let d = block_diff(&geo, &wave);
+        println!("energy geometric {tg} wave {tw}, block diff {d}");
+        assert!((tg - tw).abs() / tg < 0.01);
+        assert!(d < 0.03);
+    }
+
+    /// An in-focus point light imaged through the bank reproduces the CPU wave PSF.
+    #[test]
+    fn light_through_bank_matches_cpu_psf() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let mut lens = lens(3.5, Some(3000.0));
+        lens.set_aperture(3.5, 6, 0.0, 0.0).unwrap();
+        lens.coating = Coating::None;
+        let (w, h, bins) = (960, 640, 8);
+        let pitch = 36.0 / w as f64;
+        // A tiny light on a bank field sample.
+        let bank = crate::psfbank::PsfBank::build(&lens, Some(3000.0), bins, pitch, 21.63, &|_| {});
+        let ep_z = lens.paraxial_data(crate::glass::LAMBDA_D).entrance_pupil_z;
+        let tan_t = bank.tan_max * 7.0 / (bank.n_theta - 1) as f64;
+        // Off the y axis by a fraction of a pixel, so the image is not on a pixel boundary.
+        let c = Vec3::new(-0.37 * pitch * 3000.0 / 50.0, -(3000.0 + ep_z) * tan_t, -3000.0);
+        let scene = Scene {
+            rects: vec![],
+            lights: vec![Light { center: c, radius: 0.01, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1e3 } }],
+            background: [0.0; 3],
+        };
+        let mut s = settings(w, h, bins, false);
+        s.light_grid = 32;
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        g.configure(&lens, &s, Some(&bank)).unwrap();
+        for _ in 0..64 {
+            g.render_frame();
+        }
+        g.resolve(false).unwrap();
+        let film = g.read_film().unwrap();
+        // CPU wave PSF at the bin's centre wavelength, integrated on the film's pixels.
+        let b = 3;
+        let l = LAMBDA_MIN + LAMBDA_RANGE * (b as f64 + 0.5) / bins as f64;
+        let src = crate::psf::Source::Point(c);
+        let wf = crate::psf::Wavefront::compute(&lens, &src, l, None, 512).unwrap();
+        let psf = crate::psf::Psf::from_wavefront(&wf, 2);
+        let mut cpu = vec![0.0; w * h];
+        for smp in &psf.samples {
+            let xs = psf.reference[0] + smp[0];
+            let ys = psf.reference[1] + smp[1];
+            let x = (-xs / pitch + w as f64 / 2.0).floor();
+            let y = (h as f64 / 2.0 + ys / pitch).floor();
+            if x >= 0.0 && y >= 0.0 && (x as usize) < w && (y as usize) < h {
+                cpu[y as usize * w + x as usize] += smp[2];
+            }
+        }
+        let gpu: Vec<f64> = (0..w * h).map(|i| film.data[i * bins + b] as f64).collect();
+        let gs: f64 = gpu.iter().sum();
+        let mut diff = 0.0;
+        for i in 0..w * h {
+            diff += (gpu[i] / gs - cpu[i]).abs();
+        }
+        let peak = cpu.iter().cloned().fold(0.0, f64::max);
+        let centroid = |v: &[f64]| {
+            let t: f64 = v.iter().sum();
+            let x: f64 = v.iter().enumerate().map(|(i, e)| e * (i % w) as f64).sum::<f64>() / t;
+            let y: f64 = v.iter().enumerate().map(|(i, e)| e * (i / w) as f64).sum::<f64>() / t;
+            (x, y)
+        };
+        let argmax = |v: &[f64]| v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        let (ga, ca) = (argmax(&gpu), argmax(&cpu));
+        println!("gpu centroid {:?} peak ({}, {}) {:.3}; cpu centroid {:?} peak ({}, {}) {:.3}", centroid(&gpu), ga % w, ga / w, gpu[ga] / gs, centroid(&cpu), ca % w, ca / w, cpu[ca]);
+        println!("L1 difference of normalised images {diff}, cpu peak pixel {peak}");
+        assert!(diff < 0.06);
     }
 }

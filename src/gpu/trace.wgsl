@@ -16,6 +16,8 @@
 @group(1) @binding(0) var<storage, read_write> film: array<FILM_ATOMIC>;
 // Quarter-resolution film for large, smooth ghost footprints.
 @group(1) @binding(1) var<storage, read_write> lowres: array<FILM_ATOMIC>;
+// Flux of light jobs imaged through the PSF bank, per job (first task index).
+@group(1) @binding(2) var<storage, read_write> job_flux: array<FILM_ATOMIC>;
 
 // ------------------------------------------------------------------ random
 
@@ -429,9 +431,12 @@ fn texture_eval(b: u32, u: f32, v: f32) -> vec3<f32> {
     }
 }
 
-// Spectral radiance seen along a ray leaving the lens (lights are black here:
-// they are rendered by light tracing).
-fn scene_radiance(o: vec3<f32>, d: vec3<f32>, l: f32) -> f32 {
+// What a ray leaving the lens sees: spectral radiance and the object point
+// (or, for the background, the direction; lights are black here: they are
+// rendered by light tracing).
+struct SceneHit { radiance: f32, p: vec3<f32>, at_inf: bool }
+
+fn scene_hit(o: vec3<f32>, d: vec3<f32>, l: f32) -> SceneHit {
     var best = 3.0e38;
     var hit = -1;
     var uv = vec2<f32>(0.0);
@@ -445,17 +450,127 @@ fn scene_radiance(o: vec3<f32>, d: vec3<f32>, l: f32) -> f32 {
     }
     for (var li = 0u; li < P.n_lights; li++) {
         let t = sphere_hit(li, o, d);
-        if (t > 0.0 && t < best) { return 0.0; }
+        if (t > 0.0 && t < best) { return SceneHit(0.0, o + d * t, false); }
     }
-    if (hit < 0) { return upsample(vec3<f32>(P.bg_r, P.bg_g, P.bg_b), l); }
+    if (hit < 0) { return SceneHit(upsample(vec3<f32>(P.bg_r, P.bg_g, P.bg_b), l), d, true); }
     let b = u32(hit) * 7u;
-    return scene[b + 2u].w * upsample(texture_eval(b, uv.x, uv.y), l);
+    return SceneHit(scene[b + 2u].w * upsample(texture_eval(b, uv.x, uv.y), l), o + d * best, false);
+}
+
+fn scene_radiance(o: vec3<f32>, d: vec3<f32>, l: f32) -> f32 {
+    return scene_hit(o, d, l).radiance;
+}
+
+// ------------------------------------------------------- wave-optical PSFs
+// Bank entries: field (uniform in tan θ) × vergence × iris azimuth × bin,
+// each a CDF over (2·half + 1)² sensor pixels around the chief-ray image.
+
+struct BankPos { ok: bool, ft: f32, fv: f32, alpha: f32 }
+
+// Bank coordinates of an object point (or direction at infinity).
+fn bank_pos(p: vec3<f32>, at_inf: bool) -> BankPos {
+    var lateral: vec2<f32>;
+    var verg = 0.0;
+    if (at_inf) {
+        lateral = p.xy / max(-p.z, 1e-6);
+    } else {
+        let dist = P.ep_z - p.z;
+        if (dist <= 0.0) { return BankPos(false, 0.0, 0.0, 0.0); }
+        lateral = p.xy / dist;
+        verg = 1.0 / dist;
+    }
+    let tan_t = length(lateral);
+    let ft = tan_t / P.bank_tan_max * f32(P.bank_nt - 1u);
+    let fv = (verg - P.bank_v0) / P.bank_dv;
+    if (ft > f32(P.bank_nt - 1u) || fv < 0.0 || fv > f32(P.bank_nv - 1u)) { return BankPos(false, 0.0, 0.0, 0.0); }
+    // The image lies opposite the object.
+    return BankPos(true, ft, fv, atan2(-lateral.y, -lateral.x));
+}
+
+fn bank_entry(t: u32, v: u32, a: u32, b: u32) -> u32 {
+    return ((t * P.bank_nv + v) * P.bank_na + a) * P.bins + b;
+}
+
+struct BankPick { entry: u32, rot: f32, reference: vec2<f32> }
+
+// Picks one of the neighbouring bank entries with probability equal to its
+// interpolation weight; the reference point is interpolated.
+fn bank_pick(bp: BankPos, bin: u32, ut: f32, uv: f32) -> BankPick {
+    let t0 = min(u32(bp.ft), P.bank_nt - 1u);
+    let t1 = min(t0 + 1u, P.bank_nt - 1u);
+    let v0 = min(u32(bp.fv), P.bank_nv - 1u);
+    let v1 = min(v0 + 1u, P.bank_nv - 1u);
+    let wt = bp.ft - f32(t0);
+    let wv = bp.fv - f32(v0);
+    // Nearest iris azimuth sample within the symmetry period.
+    let step = P.bank_period / f32(P.bank_na);
+    let rel = bp.alpha - 0.5 * PI;
+    let k = round(rel / step);
+    let a = u32(((i32(k) % i32(P.bank_na)) + i32(P.bank_na)) % i32(P.bank_na));
+    // Rotating sample a's configuration onto the actual azimuth turns the iris
+    // by whole symmetry periods plus at most half a step.
+    let rot = rel - f32(a) * step;
+    let ref_r = mix(mix(tables[P.bank_refs_off + bank_entry(t0, v0, a, bin)], tables[P.bank_refs_off + bank_entry(t1, v0, a, bin)], wt),
+                    mix(tables[P.bank_refs_off + bank_entry(t0, v1, a, bin)], tables[P.bank_refs_off + bank_entry(t1, v1, a, bin)], wt), wv);
+    let t = select(t0, t1, ut < wt);
+    let v = select(v0, v1, uv < wv);
+    let alpha_a = 0.5 * PI + f32(a) * step;
+    return BankPick(bank_entry(t, v, a, bin), rot, ref_r * vec2<f32>(cos(alpha_a), sin(alpha_a)));
+}
+
+fn rotate2(v: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+// Entry kernels: (2·half + 1)·sub cells per side, `sub` per pixel, centred
+// on the chief-ray point; layout (half, sub, CDF offset) in the lens blob.
+struct Kernel { half: u32, sub: u32, base: u32, size: u32 }
+
+fn bank_kernel(entry: u32) -> Kernel {
+    let b = P.bank_layout_off + 3u * entry;
+    let half = lens[b];
+    let sub = lens[b + 1u];
+    return Kernel(half, sub, P.bank_cdf_off + lens[b + 2u], (2u * half + 1u) * sub);
+}
+
+// Offset from the reference of kernel cell `i` at fractional position (jx, jy) in it.
+fn bank_offset(k: Kernel, i: u32, jx: f32, jy: f32) -> vec2<f32> {
+    let cell = P.pitch / f32(k.sub);
+    let start = -(f32(k.half) + 0.5) * P.pitch;
+    return vec2<f32>(start + (f32(i % k.size) + jx) * cell, start + (f32(i / k.size) + jy) * cell);
+}
+
+// Sensor point drawn from the PSF of entry `pk`.
+fn bank_sample(pk: BankPick, u: f32, jx: f32, jy: f32) -> vec2<f32> {
+    let k = bank_kernel(pk.entry);
+    var lo = 0u;
+    var hi = k.size * k.size - 1u;
+    loop {
+        if (lo >= hi) { break; }
+        let mid = (lo + hi) / 2u;
+        if (tables[k.base + mid] < u) { lo = mid + 1u; } else { hi = mid; }
+    }
+    return rotate2(pk.reference + bank_offset(k, lo, jx, jy), pk.rot);
+}
+
+// Film index (any bin offset added by the caller) of a sensor point, or −1.
+fn film_pixel(xs: f32, ys: f32) -> i32 {
+    let x = -xs / P.pitch + f32(P.w) * 0.5;
+    let y = f32(P.h) * 0.5 + ys / P.pitch;
+    if (x < 0.0 || y < 0.0 || x >= f32(P.w) || y >= f32(P.h)) { return -1; }
+    return i32(u32(y) * P.w + u32(x));
 }
 
 // -------------------------------------------------------------- film
 
 fn film_add(idx: u32, v: f32) {
     FILM_ADD
+}
+
+fn job_flux_add(idx: u32, v: f32) {
+    JOB_FLUX_ADD
 }
 
 fn lowres_add(idx: u32, v: f32) {
@@ -550,14 +665,22 @@ fn light_bounds(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(8, 8)
 fn surfaces(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= P.w || gid.y >= P.h) { return; }
+    // With the PSF bank, threads extend `psf_margin` pixels beyond the frame
+    // so light from just outside can be spread into it.
+    let m = P.psf_margin;
+    if (gid.x >= P.w + 2u * m || gid.y >= P.h + 2u * m) { return; }
+    let px = i32(gid.x) - i32(m);
+    let py = i32(gid.y) - i32(m);
+    let inside = px >= 0 && py >= 0 && px < i32(P.w) && py < i32(P.h);
     var acc: array<f32, 32>;
-    let pix = gid.y * P.w + gid.x;
+    let id = gid.y * (P.w + 2u * m) + gid.x;
     let dz = P.sensor_z - P.rear_z;
+    let scale = P.norm * LAMBDA_RANGE / f32(P.bins * P.spp);
+    var rng = Rng(hash4(id, P.frame, 0x7a1u, 3u));
     for (var bin = 0u; bin < P.bins; bin++) {
         // Per pixel and bin a fixed random shift of the low-discrepancy sequence.
         var sh: array<u32, 5>;
-        for (var k = 0u; k < 5u; k++) { sh[k] = hash4(pix, bin, k, 0x9e37u); }
+        for (var k = 0u; k < 5u; k++) { sh[k] = hash4(id, bin, k, 0x9e37u); }
         for (var s = 0u; s < P.spp; s++) {
             let j = P.frame * P.spp + s;
             let u0 = to_unit(sh[0] + r5(j, 0u));
@@ -565,8 +688,8 @@ fn surfaces(@builtin(global_invocation_id) gid: vec3<u32>) {
             let u2 = to_unit(sh[2] + r5(j, 2u));
             let u3 = to_unit(sh[3] + r5(j, 3u));
             let u4 = to_unit(sh[4] + r5(j, 4u));
-            let xo = (f32(gid.x) + u0 - f32(P.w) * 0.5) * P.pitch;
-            let yo = (f32(P.h) * 0.5 - f32(gid.y) - u1) * P.pitch;
+            let xo = (f32(px) + u0 - f32(P.w) * 0.5) * P.pitch;
+            let yo = (f32(P.h) * 0.5 - f32(py) - u1) * P.pitch;
             let xs = -xo;
             let ys = -yo;
             let o = vec3<f32>(xs, ys, P.sensor_z);
@@ -605,12 +728,27 @@ fn surfaces(@builtin(global_invocation_id) gid: vec3<u32>) {
             let t = trace_path(&ray, l, 1u);
             if (t < 0.0) { continue; }
             let c4 = d.z * d.z * d.z * d.z;
-            acc[bin] += scene_radiance(ray.o, ray.d, l) * t * (bb.z - bb.x) * (bb.w - bb.y) * c4 / (dz * dz);
+            let hit = scene_hit(ray.o, ray.d, l);
+            let c = hit.radiance * t * (bb.z - bb.x) * (bb.w - bb.y) * c4 / (dz * dz);
+            if (c == 0.0) { continue; }
+            if (P.bank_on != 0u) {
+                let bp = bank_pos(hit.p, hit.at_inf);
+                if (bp.ok) {
+                    // The light from this scene point goes through its wave-optical PSF.
+                    let pk = bank_pick(bp, bin, rnd(&rng), rnd(&rng));
+                    let q = bank_sample(pk, rnd(&rng), rnd(&rng), rnd(&rng));
+                    let fp = film_pixel(q.x, q.y);
+                    if (fp >= 0) { film_add(u32(fp) * P.bins + bin, c * scale); }
+                    continue;
+                }
+            }
+            if (inside) { acc[bin] += c; }
         }
     }
-    let scale = P.norm * LAMBDA_RANGE / f32(P.bins * P.spp);
+    if (!inside) { return; }
+    let pix = u32(py) * P.w + u32(px);
     for (var b = 0u; b < P.bins; b++) {
-        film_add(pix * P.bins + b, acc[b] * scale);
+        if (acc[b] != 0.0) { film_add(pix * P.bins + b, acc[b] * scale); }
     }
 }
 
@@ -654,7 +792,8 @@ fn veil(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ------------------------------------------------- lights (forward grids)
-// Task: (light, path, bin, kind), (λ jitter, disk x, disk y, grid jitter x), (grid jitter y, weight, tile, grid size).
+// Task: (light, path, bin, kind), (λ jitter, disk x, disk y, grid jitter x),
+// (grid jitter y, weight, tile, grid size), (index of the job's first task, -, -, -).
 // Each workgroup traces a 17×17 tile of grid rays and rasterises the 16×16
 // quads between them with their flux (after Hullin et al. 2011).
 
@@ -727,10 +866,11 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
     // One record per workgroup: a 16×16 tile of one job's grid.
     let task = wg.x + wg.y * 65535u;
     if (task >= P.n_tasks) { return; }
-    let job = jobs[task * 3u];
-    let jf = bitcast<vec4<f32>>(jobs[task * 3u + 1u]);
-    let jf2 = bitcast<vec4<f32>>(jobs[task * 3u + 2u]);
-    let tinfo = jobs[task * 3u + 2u];
+    let job = jobs[task * 4u];
+    let jf = bitcast<vec4<f32>>(jobs[task * 4u + 1u]);
+    let jf2 = bitcast<vec4<f32>>(jobs[task * 4u + 2u]);
+    let tinfo = jobs[task * 4u + 2u];
+    let first_task = jobs[task * 4u + 3u].x;
     let li = job.x;
     let lg = light_geom(li);
     let ghost = job.w != 0u;
@@ -791,6 +931,18 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
     let c = verts[i00 + 18u];
     let d = verts[i00 + 17u];
     let valid = a.w + b.w + c.w + d.w;
+    // Direct images of lights within the PSF bank: only collect the flux; the
+    // psf_splat pass images it through the wave-optical PSF.
+    if (P.bank_on != 0u && !ghost && bank_pos(e, false).ok) {
+        var flux = 0.0;
+        if (valid == 4.0) {
+            flux = 0.25 * (a.z + b.z + c.z + d.z) * scale;
+        } else {
+            flux = 0.25 * (a.z * a.w + b.z * b.w + c.z * c.w + d.z * d.w) * scale;
+        }
+        if (flux > 0.0) { job_flux_add(first_task, flux); }
+        return;
+    }
     if (valid == 4.0) {
         let flux = 0.25 * (a.z + b.z + c.z + d.z) * scale;
         raster_triangle(a.xyz, b.xyz, c.xyz, 0.5 * flux, job.z);
@@ -807,5 +959,37 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
             }
             if (cv.w > 0.0) { splat(cv.x, cv.y, job.z, 0.25 * cv.z * scale); }
         }
+    }
+}
+
+// Images the collected flux of in-bank light jobs through the PSF: one
+// workgroup per job (its first task).
+@compute @workgroup_size(256)
+fn psf_splat(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) tid: u32) {
+    let task = wg.x + wg.y * 65535u;
+    if (task >= P.n_tasks || P.bank_on == 0u) { return; }
+    let job = jobs[task * 4u];
+    let jf = bitcast<vec4<f32>>(jobs[task * 4u + 1u]);
+    let tinfo = jobs[task * 4u + 2u];
+    if (job.w != 0u || tinfo.z != 0u) { return; }
+    let lg = light_geom(job.x);
+    let e = lg.c + lg.t1 * (jf.y * lg.radius) + lg.t2 * (jf.z * lg.radius);
+    let bp = bank_pos(e, false);
+    if (!bp.ok) { return; }
+    let jidx = task;
+    let flux = JOB_FLUX_LOAD;
+    if (flux <= 0.0) { return; }
+    var rng = Rng(hash4(task, P.frame, 0x5e1u, 9u));
+    let pk = bank_pick(bp, job.z, rnd(&rng), rnd(&rng));
+    let k = bank_kernel(pk.entry);
+    let n = k.size * k.size;
+    for (var i = tid; i < n; i += 256u) {
+        var prob = tables[k.base + i];
+        if (i > 0u) { prob -= tables[k.base + i - 1u]; }
+        if (prob <= 0.0) { continue; }
+        // Sub-pixel cells go to the pixel containing their centre.
+        let q = rotate2(pk.reference + bank_offset(k, i, 0.5, 0.5), pk.rot);
+        let fp = film_pixel(q.x, q.y);
+        if (fp >= 0) { film_add(u32(fp) * P.bins + job.z, flux * prob); }
     }
 }
