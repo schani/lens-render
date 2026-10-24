@@ -99,14 +99,30 @@ Any `[camera]` key can be overridden with `--set key=value`.
 
 Controls for the lens (any `.lens` file next to the scene's), f-number, focus distance (or click the image to focus there),
 iris blades, blade curvature and rotation, coating, ghosts, diffraction,
-exposure, tone curve and resolution. The lens panel shows a cross-section
-with meridional ray fans traced through the current lens (blocked rays
-marked, optionally coloured by wavelength) and an editable prescription:
-radii, thicknesses, glasses (catalogue or nd/vd), semi-diameters, stop
-position, inserting and removing surfaces, "Save as" to a `.lens` file.
-Accumulation restarts on lens changes;
+exposure, tone curve and resolution. Accumulation restarts on lens changes;
 exposure and tone curve apply without restarting. Diffraction switches on
 after 8 frames, once the image has settled. "Save PNG" writes `view.png`.
+
+The lens panel below the image shows the lens in cross-section, traced
+through as it is set up, and edits it:
+
+- Drag a surface or an element along the axis, or a surface's rim handle to
+  bend it and change its diameter. Right-click to insert, delete or flip
+  elements. Undo (⌘Z), Revert, "Save as" to a `.lens` file.
+- Overlays: ray fans for three image heights (blocked rays marked ×,
+  optionally per wavelength), the three strongest ghosts of a distant light
+  with their share of the light, and focus travel (the lens at ∞ and at its
+  closest distance, aligned on the sensor).
+- Tabs:
+  - Glass: Abbe diagram; drag the selected element's glass or pick a
+    catalogue glass.
+  - Aberrations: third-order (Seidel) contribution of every surface, in
+    waves.
+  - Pupils: the entrance pupil seen from five image heights, coloured by
+    what blocks the light (vignetting).
+  - PSF: wavefront error and white-light PSF at three image heights.
+  - Light loss: transmission surface by surface, coated and uncoated.
+  - Numbers: the prescription as a table.
 
 ### Wave optics
 

@@ -14,11 +14,8 @@ pub struct Footprint {
     /// Image height as a fraction of the half diagonal, and in mm.
     pub fraction: f64,
     pub height: f64,
-    /// Field angle (radians).
-    pub theta: f64,
     pub grid: usize,
-    /// Grid centre (the chief ray's aim point) and cell size on the entrance-pupil plane (mm).
-    pub centre: [f64; 2],
+    /// Cell size on the entrance-pupil plane (mm); the grid is centred on the chief ray's aim point.
     pub cell: f64,
     /// Row-major `grid` × `grid`, row 0 at +y, column 0 at −x: None where the
     /// ray passes, otherwise the surface blocking it.
@@ -74,7 +71,7 @@ pub fn footprints(lens: &Lens, focus: Option<f64>, half_diag: f64, grid: usize) 
                     if out.is_some() { None } else { Some(blocking_surface(lens, &pts)) }
                 })
                 .collect();
-            Some(Footprint { fraction, height, theta, grid, centre: [q.x, q.y], cell, cells, relative_area: 0.0 })
+            Some(Footprint { fraction, height, grid, cell, cells, relative_area: 0.0 })
         })
         .collect();
     let passing = |f: &Footprint| f.cells.iter().filter(|c| c.is_none()).count() as f64;

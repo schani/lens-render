@@ -90,6 +90,7 @@ pub struct Viewer {
     glass_map: GlassMap,
     psf_view: PsfView,
     tab: LensTab,
+    seidel_shown: [bool; 7],
     /// Analyses of the applied lens (for `applies`), computed in the background.
     analysis: Option<Analysis>,
     analysis_job: Option<(u64, std::sync::mpsc::Receiver<Analysis>)>,
@@ -134,7 +135,10 @@ pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop:
 #[derive(Clone, Copy, PartialEq)]
 enum LensTab {
     Glass,
+    Aberrations,
+    Pupils,
     Psf,
+    LightLoss,
     Numbers,
 }
 
@@ -144,6 +148,9 @@ struct Analysis {
     ghosts: Vec<Ghost>,
     psfs: Vec<FieldPsf>,
     focus: FocusTravel,
+    seidel: Option<crate::seidel::Seidel>,
+    footprints: crate::footprint::Footprints,
+    light_loss: crate::footprint::LightLoss,
 }
 
 impl Analysis {
@@ -152,7 +159,15 @@ impl Analysis {
         let ghosts = crate::psf::field_for_height(lens, 0.5 * half_diag, None)
             .map(|th| crate::ghosts::ghosts(lens, &crate::psf::Source::at_field(lens, th, None), 550.0))
             .unwrap_or_default();
-        Analysis { key, ghosts, psfs: crate::fieldpsf::field_psfs(lens, focus, half_diag), focus: lensview::focus_travel(lens) }
+        Analysis {
+            key,
+            ghosts,
+            psfs: crate::fieldpsf::field_psfs(lens, focus, half_diag),
+            focus: lensview::focus_travel(lens),
+            seidel: crate::psf::field_for_height(lens, half_diag, focus).map(|th| crate::seidel::seidel(lens, th, focus)),
+            footprints: crate::footprint::footprints(lens, focus, half_diag, 64),
+            light_loss: crate::footprint::light_loss(lens, focus, half_diag),
+        }
     }
 }
 
@@ -232,6 +247,8 @@ impl Viewer {
             glass_map: GlassMap::default(),
             psf_view: PsfView::default(),
             tab: LensTab::Glass,
+            // Distortion, in waves, dwarfs the rest; it is a click away.
+            seidel_shown: [true, true, true, true, false, true, true],
             analysis: None,
             analysis_job: None,
             fans: None,
@@ -535,7 +552,15 @@ impl Viewer {
             ui.separator();
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    for (t, label) in [(LensTab::Glass, "Glass"), (LensTab::Psf, "PSF"), (LensTab::Numbers, "Numbers")] {
+                    let tabs = [
+                        (LensTab::Glass, "Glass"),
+                        (LensTab::Aberrations, "Aberrations"),
+                        (LensTab::Pupils, "Pupils"),
+                        (LensTab::Psf, "PSF"),
+                        (LensTab::LightLoss, "Light loss"),
+                        (LensTab::Numbers, "Numbers"),
+                    ];
+                    for (t, label) in tabs {
                         ui.selectable_value(&mut self.tab, t, label);
                     }
                 });
@@ -547,6 +572,19 @@ impl Viewer {
                         }
                     }
                     LensTab::Psf => self.psf_view.ui(ui, analysis.map(|a| (a.key, a.psfs.as_slice()))),
+                    LensTab::Aberrations => match analysis.map(|a| a.seidel.as_ref()) {
+                        Some(Some(sd)) => lensview::seidel_chart(ui, sd, &mut self.seidel_shown),
+                        Some(None) => drop(ui.label("no chief ray for the full field")),
+                        None => drop(ui.label("computing…")),
+                    },
+                    LensTab::Pupils => match analysis {
+                        Some(a) => lensview::footprint_plots(ui, &a.footprints),
+                        None => drop(ui.label("computing…")),
+                    },
+                    LensTab::LightLoss => match analysis {
+                        Some(a) => lensview::light_loss_chart(ui, &a.light_loss),
+                        None => drop(ui.label("computing…")),
+                    },
                     LensTab::Numbers => {
                         let before = self.editor.draft.clone();
                         if let Some(l) = self.editor.ui(ui) {
@@ -608,6 +646,9 @@ impl eframe::App for Viewer {
                     self.diagram.selected = Some(0);
                     self.tab = match std::env::var("LENS_VIEWER_TAB").as_deref() {
                         Ok("glass") => LensTab::Glass,
+                        Ok("aberrations") => LensTab::Aberrations,
+                        Ok("pupils") => LensTab::Pupils,
+                        Ok("light") => LensTab::LightLoss,
                         Ok("numbers") => LensTab::Numbers,
                         _ => LensTab::Psf,
                     };

@@ -49,8 +49,7 @@ fn swatch(ui: &mut egui::Ui, color: Color32) {
 pub fn seidel_chart(ui: &mut egui::Ui, data: &Seidel, shown: &mut [bool; 7]) {
     ui.horizontal_wrapped(|ui| {
         for (k, name) in TERMS.iter().enumerate() {
-            swatch(ui, TERM_COLORS[k]);
-            ui.checkbox(&mut shown[k], *name);
+            ui.checkbox(&mut shown[k], egui::RichText::new(*name).color(TERM_COLORS[k]).strong());
         }
     });
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
@@ -61,18 +60,25 @@ pub fn seidel_chart(ui: &mut egui::Ui, data: &Seidel, shown: &mut [bool; 7]) {
     if terms.is_empty() || n == 0 {
         return;
     }
-    let plot = Rect::from_min_max(rect.min + vec2(64.0, 10.0), rect.max - vec2(8.0, 30.0));
+    let plot = Rect::from_min_max(rect.min + vec2(64.0, 20.0), rect.max - vec2(8.0, 30.0));
     let vmax = data.surfaces.iter().chain(std::iter::once(&data.sum)).flat_map(|v| terms.iter().map(move |&k| v[k].abs())).fold(1e-12, f64::max);
     let mid = plot.center().y;
     let yscale = plot.height() as f64 / (2.0 * vmax);
     let at_y = |v: f64| mid - (v * yscale) as f32;
-    for f in [-1.0, -0.5, 0.0, 0.5, 1.0] {
-        let y = at_y(f * vmax);
-        let color = if f == 0.0 { AXIS_COLOR } else { Color32::from_gray(225) };
+    // Ticks at multiples of 1, 2 or 5 × 10ⁿ.
+    let raw = vmax / 2.0;
+    let mag = 10f64.powf(raw.log10().floor());
+    let step = [5.0, 2.0, 1.0].into_iter().map(|m| m * mag).find(|s| *s <= raw).unwrap_or(mag);
+    let ticks = (vmax / step).floor() as i32;
+    for t in -ticks..=ticks {
+        let v = t as f64 * step;
+        let y = at_y(v);
+        let color = if t == 0 { AXIS_COLOR } else { Color32::from_gray(225) };
         painter.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], Stroke::new(1.0, color));
-        painter.text(pos2(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, fmt(f * vmax), font(), TEXT_COLOR);
+        let label = format!("{v:.3}");
+        painter.text(pos2(plot.left() - 4.0, y), egui::Align2::RIGHT_CENTER, label.trim_end_matches('0').trim_end_matches('.'), font(), TEXT_COLOR);
     }
-    painter.text(rect.left_top() + vec2(4.0, 2.0), egui::Align2::LEFT_TOP, "waves", font(), TEXT_COLOR);
+    painter.text(rect.left_top() + vec2(4.0, 2.0), egui::Align2::LEFT_TOP, "waves at 550 nm", font(), TEXT_COLOR);
 
     // One group per surface, a gap, then the sums.
     let gw = plot.width() / (n + 2) as f32;
@@ -124,6 +130,7 @@ pub fn footprint_plots(ui: &mut egui::Ui, data: &Footprints) {
     ui.horizontal(|ui| {
         for f in &data.fields {
             ui.vertical(|ui| {
+                ui.set_max_width(size);
                 let (rect, _) = ui.allocate_exact_size(vec2(size, size), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
                 let cs = size / f.grid as f32;
