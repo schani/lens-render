@@ -67,6 +67,9 @@ pub struct CameraCfg {
     /// Ray grid resolution (per side) for every light and ghost path.
     #[serde(default = "d_ghost_grid")]
     pub ghost_grid: usize,
+    /// Ghosts are traced for lights with at least this fraction of the brightest light's power.
+    #[serde(default = "d_ghost_threshold")]
+    pub ghost_threshold: f64,
     #[serde(default = "d_bins")]
     pub spectral_bins: usize,
     /// "clip" or "filmic".
@@ -99,7 +102,10 @@ fn d_light_samples() -> u64 {
     4_000_000
 }
 fn d_ghost_grid() -> usize {
-    256
+    128
+}
+fn d_ghost_threshold() -> f64 {
+    0.01
 }
 fn d_bins() -> usize {
     16

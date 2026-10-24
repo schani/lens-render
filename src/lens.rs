@@ -451,6 +451,15 @@ impl Lens {
         out
     }
 
+    /// Ghost paths reversed for tracing from the sensor into the scene.
+    /// Refractions flip direction; reflections keep the incident side.
+    pub fn ghost_paths_backward(&self) -> Vec<Vec<Event>> {
+        self.ghost_paths()
+            .into_iter()
+            .map(|(_, _, p)| p.iter().rev().map(|e| Event { forward: if e.reflect { e.forward } else { !e.forward }, ..*e }).collect())
+            .collect()
+    }
+
     /// Rays from an on-axis object point at `distance` mm in front of the front
     /// vertex (infinite if `None`), sampled on a grid over the front element.
     /// Returns the rays leaving the last surface with their luminance weight.

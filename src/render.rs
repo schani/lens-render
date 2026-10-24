@@ -81,6 +81,7 @@ pub struct Renderer<'a> {
 }
 
 const BOUNDS_N: usize = 64;
+const GHOST_EVERY: usize = 4;
 
 impl<'a> Renderer<'a> {
     pub fn new(lens: &'a Lens, scene: &'a Scene, cs: &'a ColorSystem, w: usize, h: usize, sensor_w: f64, bins: usize, norm: f64) -> Self {
@@ -166,8 +167,15 @@ impl<'a> Renderer<'a> {
 
     /// Backward pass: scene surfaces and background.
     /// `spp` is rounded up to a multiple of the number of wavelength bins.
-    pub fn render_surfaces(&self, film: &mut Film, spp: u32, progress: bool) {
+    /// With `ghosts`, every `GHOST_EVERY`th sample also traces one randomly
+    /// chosen ghost path, adding veiling glare from bright scene surfaces.
+    pub fn render_surfaces(&self, film: &mut Film, spp: u32, ghosts: bool, progress: bool) {
+        let ghost_paths = if ghosts { self.lens.ghost_paths_backward() } else { Vec::new() };
+        let sd_rear = self.lens.surfaces.last().unwrap().semi_diameter;
+        let ghost_area = std::f64::consts::PI * sd_rear * sd_rear;
         let spp = spp.div_ceil(self.bins as u32) * self.bins as u32;
+        let per_bin = spp as usize / self.bins;
+        let ghost_weight = ghost_paths.len() as f64 * per_bin as f64 / per_bin.div_ceil(GHOST_EVERY) as f64;
         let r5 = R5::new();
         let zr = self.rear_z();
         let zs = self.lens.sensor_z;
@@ -178,6 +186,7 @@ impl<'a> Renderer<'a> {
         let w = self.w;
         film.data.par_chunks_mut(w * bins).enumerate().for_each(|(py, row)| {
             let mut rng = Rng::new(0x5eed ^ py as u64, py as u64);
+            let mut grng = Rng::new(0x6057 ^ py as u64, py as u64 + (1 << 32));
             let mut shifts = vec![[0.0; 5]; bins];
             for px in 0..w {
                 // Each wavelength bin gets its own randomly shifted low-discrepancy
@@ -188,18 +197,33 @@ impl<'a> Renderer<'a> {
                 let out = &mut row[px * bins..(px + 1) * bins];
                 for i in 0..spp {
                     let bin = i as usize % bins;
-                    let u = r5.sample((i as usize / bins) as u64, &shifts[bin]);
+                    let j = i as usize / bins;
+                    let u = r5.sample(j as u64, &shifts[bin]);
                     let (xs, ys) = self.sensor_point(px as f64 + u[0], py as f64 + u[1]);
+                    let o = Vec3::new(xs, ys, zs);
+                    let l = LAMBDA_MIN + LAMBDA_RANGE * (bin as f64 + u[4]) / bins as f64;
+                    let m = self.lens.media(l);
+                    if !ghost_paths.is_empty() && j % GHOST_EVERY == 0 {
+                        // Ghost rays may leave through any part of the rear element.
+                        let (gx, gy) = concentric_disk(grng.next_f64(), grng.next_f64());
+                        let g = ((grng.next_f64() * ghost_paths.len() as f64) as usize).min(ghost_paths.len() - 1);
+                        let d = (Vec3::new(gx * sd_rear, gy * sd_rear, zr) - o).normalize();
+                        if let Some((ray, t)) = self.lens.trace_path(Ray { o, d }, l, &m, &ghost_paths[g]) {
+                            if ray.d.z < 0.0 {
+                                let cos = -d.z;
+                                let weight = ghost_area * cos * cos * cos * cos / (dz * dz) * ghost_weight;
+                                let radiance = self.scene.radiance(self.cs, &ray, l);
+                                out[bin] += (radiance * t * weight * scale) as f32;
+                            }
+                        }
+                    }
                     let r = xs.hypot(ys);
                     let Some(bb) = self.bounds_at(r) else { continue };
                     let bx = bb[0] + (bb[2] - bb[0]) * u[2];
                     let by = bb[1] + (bb[3] - bb[1]) * u[3];
                     let (s, c) = if r > 0.0 { (ys / r, xs / r) } else { (0.0, 1.0) };
-                    let o = Vec3::new(xs, ys, zs);
                     let target = Vec3::new(bx * c - by * s, bx * s + by * c, zr);
                     let d = (target - o).normalize();
-                    let l = LAMBDA_MIN + LAMBDA_RANGE * (bin as f64 + u[4]) / bins as f64;
-                    let m = self.lens.media(l);
                     let Some((ray, t)) = self.lens.trace_backward(Ray { o, d }, l, &m) else { continue };
                     let cos = -d.z;
                     let weight = (bb[2] - bb[0]) * (bb[3] - bb[1]) * cos * cos * cos * cos / (dz * dz);
@@ -236,10 +260,10 @@ impl<'a> Renderer<'a> {
         (0..chunks).into_par_iter().for_each(|ci| {
             let mut rng = Rng::new(seed, ci);
             let count = chunk.min(n - ci * chunk);
-            for _ in 0..count {
-                let ul = rng.next_f64();
-                let l = LAMBDA_MIN + LAMBDA_RANGE * ul;
-                let bin = ((ul * self.bins as f64) as usize).min(self.bins - 1);
+            for k in 0..count {
+                // Wavelength bins are cycled so each gets the same number of samples.
+                let bin = (k as usize) % self.bins;
+                let l = LAMBDA_MIN + LAMBDA_RANGE * (bin as f64 + rng.next_f64()) / self.bins as f64;
                 let (ex, ey) = concentric_disk(rng.next_f64(), rng.next_f64());
                 let e = light.center + t1 * (ex * light.radius) + t2 * (ey * light.radius);
                 let (qx, qy) = concentric_disk(rng.next_f64(), rng.next_f64());
@@ -283,20 +307,28 @@ impl<'a> Renderer<'a> {
         let intensity_area = std::f64::consts::PI * light.radius * light.radius; // intensity / radiance
         let zs = self.lens.sensor_z;
         let bin_width = LAMBDA_RANGE / self.bins as f64;
-        let sub = 2;
+        // Each sub-sample uses its own wavelength within the bin and its own
+        // point on the light, which softens caustics of extended sources.
+        let sub = 4;
         let refine = 8;
         let n1 = grid + 1;
+        let n_e = (-light.center).normalize();
+        let helper = if n_e.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let t1 = n_e.cross(helper).normalize();
+        let t2 = n_e.cross(t1);
         let mut verts: Vec<Option<(f64, f64, f64)>> = vec![None; n1 * n1];
         for k in 0..sub {
-            let l = LAMBDA_MIN + bin_width * (bin as f64 + (k as f64 + 0.5) / sub as f64);
+            let l = LAMBDA_MIN + bin_width * (bin as f64 + ((k * 3 + bin) % sub) as f64 / sub as f64 + 0.5 / sub as f64);
             let m = self.lens.media(l);
             let radiance = light.spectrum.eval(self.cs, l);
+            let (ox, oy) = concentric_disk(0.25 + 0.5 * (k % 2) as f64, 0.25 + 0.5 * (k / 2 % 2) as f64);
+            let origin = light.center + t1 * (ox * light.radius) + t2 * (oy * light.radius);
             // Sensor position (pixel units) and flux density on the entrance plane.
             let trace = |x: f64, y: f64| -> Option<(f64, f64, f64)> {
-                let dv = Vec3::new(x, y, 0.0) - light.center;
+                let dv = Vec3::new(x, y, 0.0) - origin;
                 let dist2 = dv.dot(dv);
                 let d = dv * (1.0 / dist2.sqrt());
-                let (out, t) = self.lens.trace_path(Ray { o: light.center, d }, l, &m, path)?;
+                let (out, t) = self.lens.trace_path(Ray { o: origin, d }, l, &m, path)?;
                 if out.d.z <= 0.0 {
                     return None;
                 }
@@ -388,20 +420,32 @@ impl<'a> Renderer<'a> {
     }
 
     /// Forward pass: direct images of the lights and, optionally, ghosts.
-    pub fn render_lights(&self, film: &mut Film, light_samples: u64, ghost_grid: usize, ghosts: bool, progress: bool) {
+    /// Ghosts are traced only for lights whose power is at least
+    /// `ghost_threshold` times that of the most powerful light.
+    pub fn render_lights(&self, film: &mut Film, light_samples: u64, ghost_grid: usize, ghost_threshold: f64, progress: bool) {
         if self.scene.lights.is_empty() {
             return;
         }
         let acc: Vec<AtomicU32> = (0..film.data.len()).map(|_| AtomicU32::new(0)).collect();
         let p = self.lens.paraxial_data(crate::glass::LAMBDA_D);
         let r_ep = 1.5 * self.lens.iris.max_radius / p.entrance_pupil_mag;
-        let ghost_paths = if ghosts { self.lens.ghost_paths() } else { Vec::new() };
+        let ghost_paths = self.lens.ghost_paths();
+        let power: Vec<f64> = self
+            .scene
+            .lights
+            .iter()
+            .map(|l| l.radius * l.radius * l.spectrum.eval(self.cs, 555.0))
+            .collect();
+        let max_power = power.iter().cloned().fold(0.0, f64::max);
         let nl = self.scene.lights.len();
         for li in 0..nl {
             if progress {
                 eprint!("\r  lights: {}/{}", li + 1, nl);
             }
             self.trace_light_path(li, &self.lens.forward_path, light_samples, p.entrance_pupil_z, r_ep, li as u64 * 1000, &acc);
+            if power[li] < ghost_threshold * max_power {
+                continue;
+            }
             let jobs: Vec<(usize, usize)> = (0..ghost_paths.len()).flat_map(|g| (0..self.bins).map(move |b| (g, b))).collect();
             jobs.par_iter().for_each(|&(g, b)| self.render_ghost(li, &ghost_paths[g].2, ghost_grid, b, &acc));
         }
@@ -461,7 +505,7 @@ mod tests {
         let norm = 4.0 * 5.6 * 5.6 / std::f64::consts::PI;
         let r = Renderer::new(&lens, &scene, &cs, 60, 40, 36.0, 8, norm);
         let mut film = Film::new(60, 40, 8);
-        r.render_surfaces(&mut film, 4096, false);
+        r.render_surfaces(&mut film, 4096, false, false);
         let rgb = film.to_rgb(&cs);
         let c = rgb[20 * 60 + 30];
         // Fresnel transmission of an axial ray; the real entrance pupil is ~1.3%
@@ -491,7 +535,7 @@ mod tests {
             let back_scene = Scene { rects: vec![rect(c, side, [1.0; 3])], lights: vec![], background: [0.0; 3] };
             let r = Renderer::new(&lens, &back_scene, &cs, w, h, 36.0, bins, 1.0);
             let mut fb = Film::new(w, h, bins);
-            r.render_surfaces(&mut fb, 512, false);
+            r.render_surfaces(&mut fb, 512, false, false);
             let fwd_scene = Scene {
                 rects: vec![],
                 lights: vec![Light { center: c, radius, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1.0 } }],
@@ -499,7 +543,7 @@ mod tests {
             };
             let r = Renderer::new(&lens, &fwd_scene, &cs, w, h, 36.0, bins, 1.0);
             let mut ff = Film::new(w, h, bins);
-            r.render_lights(&mut ff, 4_000_000, 0, false, false);
+            r.render_lights(&mut ff, 4_000_000, 0, f64::INFINITY, false);
             // The square faces the axis, the light disk faces the lens.
             let cos = c.z.abs() / c.length();
             let (a, b) = (total(&fb), total(&ff) * cos);
@@ -508,4 +552,42 @@ mod tests {
         }
     }
 
+
+    /// Ghost energy from the backward pass (surfaces) matches the forward ray-grid ghosts (lights).
+    #[test]
+    fn ghost_consistency() {
+        let mut lens = lens();
+        lens.coating = crate::lens::Coating::None;
+        lens.set_aperture(4.0, 0, 0.0, 0.0).unwrap();
+        lens.sensor_z = lens.best_focus(None).unwrap();
+        let cs = ColorSystem::new();
+        let c = Vec3::new(400.0, 250.0, -5000.0);
+        let side = 60.0;
+        let (w, h, bins) = (90, 60, 4);
+        let back = Scene { rects: vec![rect(c, side, [1.0; 3])], lights: vec![], background: [0.0; 3] };
+        let r = Renderer::new(&lens, &back, &cs, w, h, 36.0, bins, 1.0);
+        let mut with = Film::new(w, h, bins);
+        r.render_surfaces(&mut with, 4096, true, false);
+        let mut without = Film::new(w, h, bins);
+        r.render_surfaces(&mut without, 4096, false, false);
+        let ghost_back = total(&with) - total(&without);
+        let fwd = Scene {
+            rects: vec![],
+            lights: vec![Light { center: c, radius: side / std::f64::consts::PI.sqrt(), spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1.0 } }],
+            background: [0.0; 3],
+        };
+        let r = Renderer::new(&lens, &fwd, &cs, w, h, 36.0, bins, 1.0);
+        let mut g = Film::new(w, h, bins);
+        r.render_lights(&mut g, 0, 256, 0.0, false);
+        let ghost_fwd = total(&g) * c.z.abs() / c.length();
+        let acc: Vec<AtomicU32> = (0..w * h * bins).map(|_| AtomicU32::new(0)).collect();
+        for b in 0..bins {
+            r.render_ghost(0, &lens.forward_path, 256, b, &acc);
+        }
+        let direct_grid: f64 = acc.iter().map(|a| f32::from_bits(a.load(Ordering::Relaxed)) as f64).sum::<f64>() * c.z.abs() / c.length();
+        // The ray-grid rasteriser reproduces the direct image energy too.
+        assert!((direct_grid - total(&without)).abs() / total(&without) < 0.01, "grid {direct_grid}");
+        println!("ghosts: backward {ghost_back} forward {ghost_fwd} (direct {})", total(&without));
+        assert!((ghost_back - ghost_fwd).abs() / ghost_fwd < 0.08);
+    }
 }

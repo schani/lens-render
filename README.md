@@ -1,0 +1,143 @@
+# lens-render
+
+Physically based, spectral simulation of a photographic lens. Rays are traced
+through the real lens prescription, so the image shows the lens'
+imperfections because they emerge from the optics, not from post effects.
+
+The first lens is a 50 mm f/3.5 Cooke triplet (`lenses/cooke-triplet.lens`).
+
+## What is simulated
+
+| Effect | How |
+| --- | --- |
+| Spherical aberration, coma, astigmatism, field curvature, distortion | Exact ray tracing through spherical surfaces (Snell's law) |
+| Longitudinal and lateral chromatic aberration | Spectral rendering, 380–780 nm; Sellmeier dispersion of the Schott glasses |
+| Natural vignetting (cos⁴) and mechanical vignetting (cat's-eye bokeh) | Sampling through the real exit pupil; clipping at element clear apertures |
+| Transmission losses, coating tint | Fresnel equations; uncoated or single-layer MgF₂ quarter-wave coating (thin-film interference) |
+| Ghosts (lens flare) | All two-reflection paths, traced from each light as a ray grid and rasterised (noise-free, with caustics) |
+| Veiling glare | The same ghost paths sampled from the sensor for bright scene surfaces |
+| Diffraction, star bursts | Fraunhofer PSF of the iris shape per wavelength, convolved with the image |
+| Bokeh shape | Iris with straight or curved blades; round when wide open |
+| Focus breathing | Unit focusing; best focus found like contrast AF (minimum RMS blur) |
+
+## Usage
+
+```sh
+cargo build --release
+
+# Optical analysis: paraxial data, aberrations vs. field, spot diagrams, layout.
+./target/release/lens-render analyze lenses/cooke-triplet.lens --out analysis
+
+# Render a scene; writes out.png and a linear out.exr.
+./target/release/lens-render render scenes/chart.toml -o chart.png
+./target/release/lens-render render scenes/night.toml -o night.png --set fstop=8 --set spp=256
+```
+
+Any `[camera]` key can be overridden with `--set key=value`.
+
+### Scenes
+
+TOML, metres, x right, y up, z = distance in front of the lens' front vertex.
+
+```toml
+background = [0.0, 0.0, 0.0]        # linear RGB radiance
+
+[camera]
+lens = "../lenses/cooke-triplet.lens"
+width = 1200                        # pixels; height follows the sensor aspect
+sensor_width_mm = 36
+sensor_height_mm = 24
+fstop = 5.6                         # omit for wide open
+focus_distance = 2.0                # metres, or inf
+focus_offset_mm = 0.0               # manual focus shift of the sensor
+coating = "single"                  # or "none"
+iris_blades = 6
+iris_rotation_deg = 0
+iris_curvature = 0.0                # 0 straight blades, 1 circular
+spp = 64                            # samples per pixel (scene surfaces)
+light_samples = 4000000             # per light, direct image
+ghost_grid = 128                    # ray grid per light and ghost path
+ghost_threshold = 0.01              # ghosts only for lights ≥ 1% of the brightest
+ghosts = true
+diffraction = true
+spectral_bins = 16
+exposure_ev = 0
+tonemap = "clip"                    # or "filmic"
+
+[[object]]
+type = "plane"                      # emissive textured rectangle
+center = [0, 0, 2.0]
+size = [1.5, 1.0]
+rotate = [0, 0, 0]                  # degrees about x, y, z
+brightness = 1.0
+texture = { kind = "chart" }        # chart | grid | checker | noise | color | image
+
+[[object]]
+type = "light"                      # small spherical light
+center = [1, 0.5, 8]
+radius = 0.02
+temperature = 3000                  # black body, or color = [r, g, b]
+radiance = 5000                     # luminance relative to a white surface
+
+[[object]]
+type = "light_string"               # evenly spaced lights from `from` to `to`
+from = [-1, 0, 3]
+to = [2, 0.5, 20]
+count = 20
+radius = 0.005
+temperature = 2700
+radiance = 300
+```
+
+Image textures: `texture = { kind = "image", path = "photo.jpg" }` (path relative to the scene file).
+
+Exposure is normalised by 4N²/π, so a white surface renders near 1.0 at the
+image centre at any f-number.
+
+### Lens files
+
+```
+@name Cooke triplet 50mm f/3.5
+# radius   thickness   material   semi-diameter
+ 22.01359  3.25896     N-SK16     10.0
+ stop      3.55041     air        5.57
+```
+
+Radius `inf` is flat; `stop` marks the iris. Materials are `air`, a
+catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,
+FUSED-SILICA) or `nd/vd`, e.g. `1.62041/60.32`. The last thickness is the
+nominal distance to the image plane; focusing moves the sensor.
+
+## The Cooke triplet
+
+`analyze` output at f/3.5, focused at infinity:
+
+- EFL 50.02 mm, BFD 42.44 mm, f/3.5
+- On-axis RMS spot 4.7 µm; ~50 µm at 15–19°, 64 µm in the corners
+- Distortion −0.5 % (barrel)
+- Lateral colour (F–C) 16 µm at the corner
+- Strong astigmatism in the corners (tangential focus −1.3 mm)
+- Relative illumination 58 % in the corners
+
+## Verification
+
+`cargo test --release` checks, among others:
+
+- Glass indices and Abbe numbers against catalogue values.
+- Real rays near the axis converge to the paraxial focus.
+- Uniform scene renders to the lens' Fresnel transmission at the image centre.
+- Backward (camera) and forward (light) tracing agree on the flux from a
+  source within 1 %, on and off axis, wide open and stopped down.
+- Ghost energy from the backward pass matches the forward ray-grid ghosts.
+
+## Approach
+
+- Scene surfaces: Monte Carlo tracing from the sensor through the lens.
+  Directions are sampled on the rear element inside precomputed exit-pupil
+  bounds; each wavelength bin gets its own low-discrepancy sample set.
+- Lights: traced forwards from the light (direct image by Monte Carlo,
+  ghosts as rasterised ray grids after Hullin et al., *Physically-Based
+  Real-Time Lens Flare Rendering*, SIGGRAPH 2011).
+- Film: per-pixel spectral irradiance in wavelength bins, convolved with the
+  per-wavelength diffraction PSF, converted to sRGB via the CIE 1931 colour
+  matching functions. Highlights far above white clip to white, as on a sensor.

@@ -1,53 +1,62 @@
 # Night street: a sign in focus at 1.5 m, strings of tungsten lights
-# receding into the distance (bokeh, cat's eye), and a bright street lamp
-# that produces ghosts / flare.
-background = [0.004, 0.005, 0.012]
+# receding into the distance (bokeh, cat's eye towards the corners) and a
+# bright street lamp producing ghosts.
+background = [0.003, 0.004, 0.010]
 
 [camera]
 lens = "../lenses/cooke-triplet.lens"
 width = 1200
 focus_distance = 1.5
-spp = 64
+spp = 128
 iris_blades = 6
-coating = "single"
 
-# The sign, lit by the street lamp.
+# Sign, lit by the street lamp.
 [[object]]
 type = "plane"
-center = [-0.12, -0.05, 1.5]
-size = [0.45, 0.3]
+center = [-0.28, -0.12, 1.5]
+size = [0.3, 0.2]
 texture = { kind = "chart" }
-brightness = 0.5
+brightness = 0.45
 
-# Hedge behind the sign.
+# Hedge.
 [[object]]
 type = "plane"
-center = [0, -1.6, 6.0]
-size = [14, 2.0]
-texture = { kind = "noise", scale = 40, palette = [[0.002, 0.004, 0.001], [0.01, 0.025, 0.006], [0.02, 0.04, 0.01]] }
+center = [0, -1.9, 7.0]
+size = [16, 2.0]
+texture = { kind = "noise", scale = 60, palette = [[0.002, 0.004, 0.001], [0.01, 0.022, 0.006], [0.025, 0.04, 0.012]] }
+
+# Fairy lights along a wall, receding.
+[[object]]
+type = "light_string"
+from = [-3.0, 0.9, 3.0]
+to = [6.0, 0.1, 40.0]
+count = 30
+radius = 0.006
+temperature = 2600
+radiance = 400
 
 [[object]]
 type = "light_string"
-from = [-2.5, 0.35, 4.0]
-to = [3.0, 0.9, 30.0]
-count = 28
-radius = 0.006
-temperature = 2700
-radiance = 250
+from = [-2.6, -0.2, 5.0]
+to = [3.4, -0.6, 7.0]
+count = 16
+radius = 0.008
+temperature = 3000
+radiance = 300
 
 [[object]]
 type = "light_string"
-from = [-3.0, -0.4, 6.0]
-to = [2.0, -0.45, 9.0]
-count = 18
-radius = 0.006
-temperature = 3200
-radiance = 250
+from = [0.3, 0.55, 3.5]
+to = [2.2, 0.75, 4.0]
+count = 7
+radius = 0.008
+color = [0.2, 0.6, 1.0]
+radiance = 300
 
 # Street lamp.
 [[object]]
 type = "light"
-center = [1.9, 1.1, 9.0]
-radius = 0.05
-temperature = 4200
-radiance = 40000
+center = [3.6, 2.2, 12.0]
+radius = 0.06
+temperature = 4000
+radiance = 60000

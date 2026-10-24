@@ -106,12 +106,16 @@ fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
     let t0 = Instant::now();
     let r = render::Renderer::new(&lens, &scene, &cs, w, h, c.sensor_width_mm, c.spectral_bins, norm);
     let mut film = render::Film::new(w, h, c.spectral_bins);
-    r.render_surfaces(&mut film, c.spp, true);
+    r.render_surfaces(&mut film, c.spp, c.ghosts, true);
     eprintln!("  surfaces done in {:.1}s", t0.elapsed().as_secs_f64());
     let t1 = Instant::now();
-    r.render_lights(&mut film, c.light_samples, c.ghost_grid, c.ghosts, true);
+    r.render_lights(&mut film, c.light_samples, c.ghost_grid, if c.ghosts { c.ghost_threshold } else { f64::INFINITY }, true);
     if !scene.lights.is_empty() {
         eprintln!("  lights done in {:.1}s", t1.elapsed().as_secs_f64());
+    }
+    let bad = film.data.iter().filter(|v| !v.is_finite() || **v < 0.0).count();
+    if bad > 0 {
+        eprintln!("  warning: {bad} invalid film values before diffraction");
     }
     if c.diffraction {
         let t2 = Instant::now();
@@ -138,7 +142,15 @@ fn write_outputs(rgb: &[[f32; 3]], w: usize, h: usize, out: &str, tonemap: &str)
     };
     let mut img = image::RgbImage::new(w as u32, h as u32);
     for (i, p) in rgb.iter().enumerate() {
-        let px = p.map(|v| (spectrum::srgb_encode(tm(v)) * 255.0 + 0.5) as u8);
+        // Like a sensor clipping in raw space, highlights far above white turn
+        // white instead of keeping out-of-gamut hues.
+        let y = (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]).max(0.0) as f64;
+        let t = ((y - 1.0) / 3.0).clamp(0.0, 1.0);
+        let white = t * t * (3.0 - 2.0 * t);
+        let px = p.map(|v| {
+            let v = tm(v).clamp(0.0, 1.0);
+            (spectrum::srgb_encode(v + (1.0 - v) * white) * 255.0 + 0.5) as u8
+        });
         img.put_pixel((i % w) as u32, (i / w) as u32, image::Rgb(px));
     }
     img.save(out)?;

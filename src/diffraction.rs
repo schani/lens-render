@@ -121,6 +121,14 @@ fn kernel(spec: &[f64], l: f64, n_w: f64, pitch: f64, half: usize) -> Vec<f64> {
     for s in [-1.0, 0.0, 1.0] {
         add(l * (1.0 + s * 0.02), 1.0);
     }
+    // Circular taper over the outer third so the truncated wings leave no square edge.
+    for j in 0..size {
+        for i in 0..size {
+            let r = (i as f64 - half as f64).hypot(j as f64 - half as f64) / half as f64;
+            let t = ((r - 2.0 / 3.0) * 3.0).clamp(0.0, 1.0);
+            k[j * size + i] *= 0.5 + 0.5 * (std::f64::consts::PI * t).cos();
+        }
+    }
     let sum: f64 = k.iter().sum();
     k.iter_mut().for_each(|v| *v /= sum);
     k
