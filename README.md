@@ -4,9 +4,17 @@ Physically based, spectral simulation of a photographic lens. Rays are traced
 through the real lens prescription, so the image shows the lens'
 imperfections because they emerge from the optics, not from post effects.
 
-Lenses: a 50 mm f/3.5 Cooke triplet (`lenses/cooke-triplet.lens`) and a
-50 mm f/2 double Gauss with cemented doublets (`lenses/double-gauss.lens`,
-e.g. `--set lens=../lenses/double-gauss.lens`).
+Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
+
+- `cooke-triplet.lens`: 50 mm f/3.5 Cooke triplet.
+- `double-gauss.lens`: 50 mm f/2 double Gauss with cemented doublets.
+- `summilux-50-asph.lens`: Leica Summilux-M 50 mm f/1.4 ASPH, a
+  **reconstruction**. Leica publishes no prescription and the patent
+  (DE 10 2004 008 997, example 2) has no data table. Radii, spacings and the
+  asphere come from Leica's vector lens drawing, the glasses are fitted. It
+  matches Leica's focal length, distortion, vignetting and close-focus scale,
+  but is sharper on axis than Leica's MTF. Sources and uncertainties:
+  `lenses/summilux-50-asph.md`.
 
 ## What is simulated
 
@@ -18,7 +26,7 @@ e.g. `--set lens=../lenses/double-gauss.lens`).
 | Transmission losses, coating tint | Fresnel equations; uncoated or single-layer MgF₂ quarter-wave coating (thin-film interference) |
 | Ghosts (lens flare) | All two-reflection paths, traced from each light as a ray grid and rasterised (noise-free, with caustics) |
 | Veiling glare | The same ghost paths sampled from the sensor for bright scene surfaces |
-| Diffraction, star bursts | Fraunhofer PSF of the iris shape per wavelength, convolved with the image |
+| Diffraction, star bursts | Default: Fraunhofer PSF of the iris shape per wavelength, convolved with the image. With `wave_optics`: wave-optical PSFs (below) |
 | Bokeh shape | Iris with straight or curved blades; round when wide open |
 | Focus breathing | Unit focusing; best focus found like contrast AF (minimum RMS blur) |
 | Manufacturing errors | Optional lateral decentering of individual elements (one-sided softness) |
@@ -50,6 +58,13 @@ Sun just outside the frame, single-coated vs. uncoated:
 ![garden coated](docs/garden-coated.jpg)
 ![garden uncoated](docs/garden-uncoated.jpg)
 
+MTF (white light, wave optics), Cooke triplet at f/3.5 and f/8:
+![triplet MTF](docs/triplet-mtf-field.png)
+
+Summilux reconstruction at f/1.4, f/2.8, f/5.6; Leica's published values as
+markers:
+![Summilux MTF](docs/summilux-mtf-field.png)
+
 Layout and spot diagrams (0–23.4° field, 200 µm boxes):
 ![layout](docs/triplet-layout.png)
 ![spots](docs/triplet-spots.png)
@@ -64,6 +79,10 @@ cargo build --release
 
 # Optical analysis: paraxial data, aberrations vs. field, spot diagrams, layout.
 ./target/release/lens-render analyze lenses/cooke-triplet.lens --out analysis
+
+# MTF charts (wave optics, white light), optionally against published data.
+./target/release/lens-render mtf lenses/summilux-50-asph.lens --fstop 1.4,5.6 \
+    --reference lenses/summilux-50-asph-leica-mtf.json --out summilux-mtf
 
 # Render a scene on the GPU; writes out.png and a linear out.exr.
 ./target/release/lens-render render scenes/chart.toml -o chart.png
@@ -83,6 +102,34 @@ iris blades, blade curvature and rotation, coating, ghosts, diffraction,
 exposure, tone curve and resolution. Accumulation restarts on lens changes;
 exposure and tone curve apply without restarting. Diffraction switches on
 after 8 frames, once the image has settled. "Save PNG" writes `view.png`.
+
+### Wave optics
+
+`wave_optics = true` (or the viewer checkbox) forms the image through
+wave-optical PSFs, computed as optical design programs do:
+
+1. Aim the chief ray through the stop centre.
+2. Trace a pupil grid, with optical path lengths to the reference sphere
+   around the chief ray's image point.
+3. FFT the pupil function √T·exp(2πi·OPD/λ). Image coordinates come from the
+   exit direction cosines, so off-axis image planes are handled.
+
+Diffraction and all aberrations are treated together. A bank of PSFs covers
+field angle × object distance × iris azimuth × wavelength bin, each stored
+as a sub-pixel core plus a wing out to 99.9 % of the energy. The ray tracer
+still finds the scene point each path sees, so occlusion and vignetting stay
+exact, and redistributes the path's light through that point's interpolated
+PSF. In-focus lights are imaged through it.
+
+Limits:
+
+- Points more than ~40 Airy diameters out of focus keep geometric optics.
+- PSF tails beyond 99.9 % of the energy (≤ 64 px) are cut, so very bright
+  lights get shorter star spikes and less glow than in the default mode.
+- Decentred lenses are not supported in this mode.
+
+The bank is built on the CPU: 15–45 s for the bundled lenses, in the
+background in the viewer.
 
 ### Speed
 
@@ -203,6 +250,13 @@ nominal distance to the image plane; focusing moves the sensor.
   decentred element), direct light images, ghosts and veiling glare in total
   energy within 1 %; diffraction to f32 precision.
 - Diffraction kernels equal a brute-force pixel integration of the PSF.
+- Wave-optical PSFs: stopped down on axis, the MTF follows the
+  diffraction-limit formula; strongly aberrated, the PSF converges to the
+  geometric spot (centroid and RMS radius).
+- Wave-optics rendering conserves energy (0.01 %), and an in-focus light
+  reproduces the CPU wave PSF on the film (3 % L1).
+- Aspheres: the Newton intersection reproduces exact spheres; GPU matches
+  CPU on an aspheric lens.
 
 ## Approach
 

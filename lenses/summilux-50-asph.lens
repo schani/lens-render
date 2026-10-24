@@ -1,0 +1,50 @@
+@name Leica Summilux-M 50mm f/1.4 ASPH - reconstruction
+# RECONSTRUCTION, not manufacturer data (Leica publishes no prescription; the patent has no table).
+# Geometry: circle/asphere fits to the vector lens cut in Leica's Feb-2023 data sheet, scaled to
+# EFL 51.6 mm (0.281465 mm per PDF pt). nd/vd are fitted, not known (see NOTES.md). Asphere refit
+# within ~2 um of the drawn profile. Semi-diameters = drawn element edges (mechanical); stop = drawn
+# opening = paraxial f/1.40. Last thickness = polychromatic best focus at infinity (paraxial: 25.230).
+#
+# radius   thickness   material   semi-diameter
+# 1: L1 front
+    39.0842     5.3580   1.82467/42.03    18.577
+# 2: L1 rear
+    97.0547     0.2207   air              17.378
+# 3: L2 front
+    25.8075     7.7817   1.47335/87.33    16.269
+# 4: L2/L3 cemented
+   539.0222     3.1054   1.73639/35.17    15.269
+# 5: L3 rear
+    22.0556     5.5722   air              12.908
+# 6: aperture stop
+       stop     2.0007   air              12.604
+# 7: L4 front (ASPHERIC)
+  -124.9816     2.5546   1.75244/51.81    12.655   k=0 a4=-1.195732e-05 a6=-5.329680e-09
+# asph k=0 A4=-1.195732e-05 A6=-5.329680e-09 A8=0 A10=0
+# 8: L4 rear
+  -233.1458     2.9545   air              12.660
+# 9: L5' front
+   -47.8096     3.1544   1.73750/29.58    12.655
+# 10: L5'/L5 cemented
+    66.0514     6.6102   1.90662/40.36    13.561
+# 11: L5 rear (floating gap follows)
+   -35.8474     0.5106   air              13.561
+# focus-gap 11 inf=0.5106 close=1.7063 close_distance=0.70
+# focus-gap 11 inf=0.5106 close=2.6424 close_distance=0.45
+# 12: L6 front
+    45.4566     6.4816   1.82569/46.46    12.556
+# 13: L6/L7 cemented
+   -44.0999     4.8465   1.57823/37.48    12.556
+# 14: L7 rear
+    30.0154    25.1984   air              12.860
+# focus-gap 14 inf=25.1984 close=29.2016 close_distance=0.70
+# focus-gap 14 inf=25.1984 close=32.3355 close_distance=0.45
+#
+# Focusing (patent DE102004008997 claim 8): the whole lens moves forward by e, the rear group L6/L7
+# by 0.77*e (ratio measured from patent Fig. 2/2a; also the ratio minimising close-range spherical
+# aberration here). e = 5.199 mm at 0.70 m (m = 1:11.3), e = 9.269 mm at 0.45 m (m = 1:6.4);
+# close_distance in the focus-gap comments is measured from the image plane (Leica convention).
+# @float below uses the parser's convention (object distance from the front vertex): 0.45 m from the
+# image plane = 0.3644 m from the front vertex (0.6185 m for 0.70 m).
+# The 0.45 m values extrapolate the 2004 floating law; Leica's 2023 cam may differ.
+@float 11 0.5106 2.6424 0.3644

@@ -36,15 +36,9 @@ pub struct PsfBank {
     pub refs: Vec<f32>,
     /// Per entry: cumulative distribution over the kernel's pixels.
     pub cdf: Vec<f32>,
-    /// Entrance pupil position (lens z) the field/vergence parameters refer to.
-    pub ep_z: f64,
 }
 
 impl PsfBank {
-    pub fn index(&self, t: usize, v: usize, a: usize, b: usize) -> usize {
-        ((t * self.n_verg + v) * self.n_az + a) * self.bins + b
-    }
-
     /// Builds the bank for the lens as configured (aperture, focus, sensor
     /// position), for objects around `focus` (mm from the front vertex).
     pub fn build(lens: &Lens, focus: Option<f64>, bins: usize, pitch: f64, half_diag: f64, progress: &(dyn Fn(f64) + Sync)) -> PsfBank {
@@ -92,7 +86,7 @@ impl PsfBank {
         let mut cdf = Vec::new();
         let mut layout = Vec::with_capacity(psfs.len());
         let mut max_half = 1;
-        let mut push_cdf = |k: &[f64], cdf: &mut Vec<f32>| -> u32 {
+        let push_cdf = |k: &[f64], cdf: &mut Vec<f32>| -> u32 {
             let off = cdf.len() as u32;
             let total: f64 = k.iter().sum();
             let mut acc = 0.0;
@@ -130,7 +124,7 @@ impl PsfBank {
             let fraction = if ew > 0.0 { ec / (ec + ew) } else { 1.0 };
             layout.push([hc as u32, sub as u32, core_off, hw as u32, wing_off, (fraction as f32).to_bits()]);
         }
-        PsfBank { n_theta, tan_max, n_verg, verg0: v_lo, dverg, n_az, period, bins, half: max_half, layout, pitch, refs, cdf, ep_z }
+        PsfBank { n_theta, tan_max, n_verg, verg0: v_lo, dverg, n_az, period, bins, half: max_half, layout, pitch, refs, cdf }
     }
 }
 

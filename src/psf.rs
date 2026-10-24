@@ -324,8 +324,6 @@ pub struct Psf {
     pub power: f64,
     /// (dx, dy, energy).
     pub samples: Vec<[f64; 3]>,
-    /// Spacing of the underlying grid along each grid axis (mm).
-    pub spacing: f64,
 }
 
 impl Psf {
@@ -363,8 +361,7 @@ impl Psf {
                 Some([dx, dy, e / total])
             })
             .collect();
-        let spacing = (wf.lambda * 1e-6) / (nn as f64 * wf.du) / det.abs().sqrt();
-        Psf { lambda: wf.lambda, reference: wf.reference, power: wf.power, samples, spacing }
+        Psf { lambda: wf.lambda, reference: wf.reference, power: wf.power, samples }
     }
 
     /// Integrates the PSF over sensor pixels: a `size` × `size` grid whose
@@ -382,6 +379,7 @@ impl Psf {
     }
 
     /// Energy-weighted centroid relative to the reference point.
+    #[cfg(test)]
     pub fn centroid(&self) -> [f64; 2] {
         let e: f64 = self.samples.iter().map(|s| s[2]).sum();
         [self.samples.iter().map(|s| s[0] * s[2]).sum::<f64>() / e, self.samples.iter().map(|s| s[1] * s[2]).sum::<f64>() / e]
@@ -413,7 +411,6 @@ fn fft2(buf: &mut [Complex<f64>], n: usize) {
 /// Polychromatic PSF: per-wavelength PSFs combined with spectral weights,
 /// placed relative to a common reference point (lateral colour included).
 pub struct PolyPsf {
-    pub reference: [f64; 2],
     pub samples: Vec<[f64; 3]>,
 }
 
@@ -435,7 +432,7 @@ impl PolyPsf {
             let off = [p.reference[0] - reference[0], p.reference[1] - reference[1]];
             samples.extend(p.samples.iter().map(|s| [s[0] + off[0], s[1] + off[1], s[2] * w / total]));
         }
-        Some(PolyPsf { reference, samples })
+        Some(PolyPsf { samples })
     }
 
     /// Modulation transfer at spatial frequencies `freqs` (cycles/mm) along
@@ -486,7 +483,7 @@ mod tests {
         let wf = Wavefront::compute(&lens, &src, 550.0, Some(256), 256).unwrap();
         assert!(wf.rms_waves() < 0.07, "rms {}", wf.rms_waves());
         let psf = Psf::from_wavefront(&wf, 4);
-        let poly = PolyPsf { reference: psf.reference, samples: psf.samples.clone() };
+        let poly = PolyPsf { samples: psf.samples.clone() };
         let n_w = lens.working_fnumber();
         for f in [10.0, 30.0, 60.0] {
             let m = poly.mtf(&[f], [1.0, 0.0])[0];

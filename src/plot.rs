@@ -3,11 +3,20 @@
 use anyhow::{Context, Result};
 use std::fmt::Write;
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum Style {
+    Solid,
+    Dashed,
+    /// Markers only: filled for `Dots`, hollow for `Rings`.
+    Dots,
+    Rings,
+}
+
 pub struct Series {
     pub label: String,
     pub points: Vec<(f64, f64)>,
     pub color: &'static str,
-    pub dashed: bool,
+    pub style: Style,
 }
 
 pub struct Chart {
@@ -57,13 +66,36 @@ impl Chart {
             (py(self.y_range.0) + py(self.y_range.1)) / 2.0,
             esc(&self.y_label)
         )?;
-        for (i, s) in self.series.iter().enumerate() {
-            let pts: Vec<String> = s.points.iter().map(|(x, y)| format!("{:.2},{:.2}", px(*x), py(y.clamp(self.y_range.0, self.y_range.1)))).collect();
-            let dash = if s.dashed { r#" stroke-dasharray="6 4""# } else { "" };
-            writeln!(out, r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="1.8"{dash}/>"#, pts.join(" "), s.color)?;
-            let ly = T + 14.0 + 18.0 * i as f64;
+        let mut row = 0;
+        for s in &self.series {
+            // Series without a label are drawn but get no legend row.
+            let ly = if s.label.is_empty() { -100.0 } else { T + 14.0 + 18.0 * row as f64 };
+            if !s.label.is_empty() {
+                row += 1;
+            }
             let lx = ox + W - R + 12.0;
-            writeln!(out, r#"<line x1="{lx}" y1="{ly}" x2="{}" y2="{ly}" stroke="{}" stroke-width="1.8"{dash}/>"#, lx + 26.0, s.color)?;
+            match s.style {
+                Style::Solid | Style::Dashed => {
+                    let pts: Vec<String> =
+                        s.points.iter().map(|(x, y)| format!("{:.2},{:.2}", px(*x), py(y.clamp(self.y_range.0, self.y_range.1)))).collect();
+                    let dash = if s.style == Style::Dashed { r#" stroke-dasharray="6 4""# } else { "" };
+                    writeln!(out, r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="1.8"{dash}/>"#, pts.join(" "), s.color)?;
+                    writeln!(out, r#"<line x1="{lx}" y1="{ly}" x2="{}" y2="{ly}" stroke="{}" stroke-width="1.8"{dash}/>"#, lx + 26.0, s.color)?;
+                }
+                Style::Dots | Style::Rings => {
+                    let fill = if s.style == Style::Dots { s.color } else { "white" };
+                    for (x, y) in &s.points {
+                        writeln!(
+                            out,
+                            r#"<circle cx="{:.2}" cy="{:.2}" r="2.6" fill="{fill}" stroke="{}" stroke-width="1.2"/>"#,
+                            px(*x),
+                            py(y.clamp(self.y_range.0, self.y_range.1)),
+                            s.color
+                        )?;
+                    }
+                    writeln!(out, r#"<circle cx="{}" cy="{ly}" r="2.6" fill="{fill}" stroke="{}" stroke-width="1.2"/>"#, lx + 13.0, s.color)?;
+                }
+            }
             writeln!(out, r#"<text x="{}" y="{}" font-size="11">{}</text>"#, lx + 32.0, ly + 4.0, esc(&s.label))?;
         }
         Ok(())

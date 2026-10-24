@@ -4,7 +4,10 @@ use crate::gpu::{self, GpuContext, GpuRenderer, Tonemap, wgpu};
 use crate::lens::{Coating, Lens};
 use crate::math::{Ray, Vec3};
 use crate::scene::{Scene, SceneFile};
+use crate::psfbank::PsfBank;
 use anyhow::Result;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use eframe::egui;
 use std::time::Instant;
 
@@ -24,6 +27,21 @@ struct Controls {
     rotation: f64,
     coated: bool,
     ghosts: bool,
+    wave: bool,
+}
+
+impl Controls {
+    /// The settings a PSF bank depends on (coating and ghosts do not matter).
+    fn bank_key(&self) -> Controls {
+        Controls { coated: true, ghosts: true, wave: true, ..self.clone() }
+    }
+}
+
+/// A PSF bank being built in the background for the given controls.
+struct BankJob {
+    key: Controls,
+    result: std::sync::mpsc::Receiver<PsfBank>,
+    progress: Arc<AtomicU32>,
 }
 
 pub struct Viewer {
@@ -42,6 +60,8 @@ pub struct Viewer {
     diffraction: bool,
     max_aperture: f64,
     status: String,
+    bank: Option<(Controls, Arc<PsfBank>)>,
+    bank_job: Option<BankJob>,
     frame_ms: f64,
     last_frame: Instant,
     /// Self-check: change controls along the way, then after this many frames
@@ -91,6 +111,7 @@ impl Viewer {
             rotation: c.iris_rotation_deg,
             coated: c.coating != "none",
             ghosts: c.ghosts,
+            wave: c.wave_optics,
         };
         let max_aperture = lens.max_aperture();
         Viewer {
@@ -109,6 +130,8 @@ impl Viewer {
             applied: None,
             max_aperture,
             status: String::new(),
+            bank: None,
+            bank_job: None,
             frame_ms: 0.0,
             last_frame: Instant::now(),
             shot: std::env::var("LENS_VIEWER_SHOT").ok().map(|p| (32, p)),
@@ -144,10 +167,40 @@ impl Viewer {
             ghost_wavelengths: 4,
             tonemap: Tonemap::Clip,
         };
-        self.renderer.configure(&lens, &settings, None)?;
+        // Wave optics: use a bank built for these settings, or start building
+        // one in the background and render geometrically meanwhile.
+        let key = k.bank_key();
+        let bank = if k.wave { self.bank.as_ref().filter(|(bk, _)| *bk == key).map(|(_, b)| b.clone()) } else { None };
+        if k.wave && bank.is_none() && self.bank_job.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let progress = Arc::new(AtomicU32::new(0));
+            let (lens2, prog) = (lens.clone(), progress.clone());
+            let (bins, pitch) = (c.spectral_bins, c.sensor_width_mm / k.width as f64);
+            let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
+            std::thread::spawn(move || {
+                let b = PsfBank::build(&lens2, focus, bins, pitch, half_diag, &|p| prog.store((p * 1000.0) as u32, Ordering::Relaxed));
+                let _ = tx.send(b);
+            });
+            self.bank_job = Some(BankJob { key, result: rx, progress });
+        }
+        self.renderer.configure(&lens, &settings, bank.as_deref())?;
         self.lens = lens;
         self.applied = Some(k);
         Ok(())
+    }
+
+    /// Takes a finished PSF bank; re-applies the controls so it is used (or a
+    /// new one is started if the settings changed meanwhile).
+    fn poll_bank(&mut self) {
+        let Some(job) = &self.bank_job else { return };
+        if let Ok(b) = job.result.try_recv() {
+            let key = job.key.clone();
+            self.bank_job = None;
+            self.bank = Some((key, Arc::new(b)));
+            if self.controls.wave {
+                self.applied = None;
+            }
+        }
     }
 
     fn sync_texture(&mut self) {
@@ -199,6 +252,12 @@ impl Viewer {
         ui.checkbox(&mut k.coated, "anti-reflection coating");
         ui.checkbox(&mut k.ghosts, "ghosts and veiling glare");
         ui.checkbox(&mut self.diffraction, "diffraction");
+        ui.checkbox(&mut k.wave, "wave-optical PSFs");
+        if let Some(job) = &self.bank_job {
+            ui.label(format!("computing PSFs… {:.0} %", job.progress.load(Ordering::Relaxed) as f64 / 10.0));
+        } else if k.wave {
+            ui.label("diffraction and aberrations via wave-optical PSFs");
+        }
         ui.separator();
         ui.add(egui::Slider::new(&mut self.exposure_ev, -8.0..=8.0).text("exposure (EV)"));
         ui.checkbox(&mut self.filmic, "filmic tone curve");
@@ -238,7 +297,8 @@ impl Viewer {
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.updates += 1;
-        if self.shot.is_some() {
+        self.poll_bank();
+        if self.shot.is_some() && !self.controls.wave {
             // Exercise lens and resolution changes before the screenshot.
             match self.updates {
                 5 => self.controls.fstop = 8.0,
@@ -303,11 +363,14 @@ impl eframe::App for Viewer {
                 }
             }
         });
-        if frames < MAX_FRAMES {
+        if frames < MAX_FRAMES || self.bank_job.is_some() {
             ui.ctx().request_repaint();
         }
         if let Some((n, path)) = self.shot.clone() {
-            if frames == n {
+            // With wave optics, wait until the PSF bank is in use.
+            let bank_ready = !self.controls.wave || (self.bank_job.is_none() && self.bank.is_some());
+            if frames >= n && bank_ready && self.shot.is_some() {
+                self.shot = None;
                 let ctx = ui.ctx().clone();
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
                     let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();

@@ -62,6 +62,9 @@ enum Cmd {
         blades: u32,
         #[arg(long, default_value_t = 21.63)]
         half_diag: f64,
+        /// Published MTF data (JSON) to overlay.
+        #[arg(long)]
+        reference: Option<String>,
         #[arg(long, default_value = "mtf")]
         out: String,
     },
@@ -88,10 +91,14 @@ fn main() -> Result<()> {
             lens.sensor_z = lens.best_focus(None)?;
             print!("{}", analysis::report(&lens, half_diag, out.as_deref())?);
         }
-        Cmd::Mtf { lens, fstop, focus, blades, half_diag, out } => {
+        Cmd::Mtf { lens, fstop, focus, blades, half_diag, reference, out } => {
             let lens = lens::Lens::load(&lens)?;
             let fstops = if fstop.is_empty() { vec![lens.max_aperture()] } else { fstop };
-            print!("{}", mtf::run(&lens, &fstops, blades, focus.map(|f| f * 1000.0), half_diag, &out)?);
+            let reference: Option<serde_json::Value> = match reference {
+                Some(p) => Some(serde_json::from_str(&std::fs::read_to_string(&p)?)?),
+                None => None,
+            };
+            print!("{}", mtf::run(&lens, &fstops, blades, focus.map(|f| f * 1000.0), half_diag, reference.as_ref(), &out)?);
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
