@@ -76,6 +76,10 @@ impl Iris {
         iris
     }
 
+    pub fn apothem(&self) -> f64 {
+        self.apothem
+    }
+
     /// Edge radius at polar angle `theta` for apothem 1.
     fn edge_radius_unit(&self, theta: f64) -> f64 {
         let sector = 2.0 * PI / self.blades as f64;

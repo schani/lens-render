@@ -117,6 +117,20 @@ impl ColorSystem {
         self.balance(xyz_to_linear_srgb(n))
     }
 
+    /// Matrix taking an XYZ integral (as in `xyz_integral_to_rgb`) to balanced linear sRGB.
+    pub fn rgb_matrix(&self) -> [[f64; 3]; 3] {
+        let mut m = [[0.0; 3]; 3];
+        for k in 0..3 {
+            let mut e = [0.0; 3];
+            e[k] = 1.0;
+            let col = self.xyz_integral_to_rgb(e);
+            for i in 0..3 {
+                m[i][k] = col[i];
+            }
+        }
+        m
+    }
+
     /// Spectral value at wavelength `l` for linear RGB colour `rgb`.
     #[inline]
     pub fn upsample(&self, rgb: [f32; 3], l: f64) -> f64 {

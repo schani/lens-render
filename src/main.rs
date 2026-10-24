@@ -2,6 +2,7 @@ mod analysis;
 mod canvas;
 mod diffraction;
 mod glass;
+mod gpu;
 mod lens;
 mod math;
 mod render;
@@ -31,6 +32,9 @@ enum Cmd {
         /// Override settings, e.g. `--set fstop=8 --set spp=256`.
         #[arg(long = "set")]
         overrides: Vec<String>,
+        /// Use the CPU reference renderer instead of the GPU.
+        #[arg(long)]
+        cpu: bool,
     },
     /// Print optical analysis of a lens prescription and draw diagnostics.
     Analyze {
@@ -55,12 +59,25 @@ fn main() -> Result<()> {
             lens.sensor_z = lens.best_focus(None)?;
             print!("{}", analysis::report(&lens, half_diag, out.as_deref())?);
         }
-        Cmd::Render { scene, out, overrides } => render(&scene, &out, &overrides)?,
+        Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
     }
     Ok(())
 }
 
-fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
+/// A scene file with its lens set up (aperture, focus) as the camera says.
+struct Setup {
+    file: scene::SceneFile,
+    scene: scene::Scene,
+    lens: lens::Lens,
+    cs: spectrum::ColorSystem,
+    fstop: f64,
+    focus: Option<f64>,
+    w: usize,
+    h: usize,
+    norm: f64,
+}
+
+fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     let text = std::fs::read_to_string(scene_path)?;
     let mut doc: toml::Table = toml::from_str(&text)?;
     let cam = doc.get_mut("camera").and_then(|c| c.as_table_mut()).ok_or_else(|| anyhow::anyhow!("missing [camera]"))?;
@@ -94,6 +111,12 @@ fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
     let w = c.width as usize;
     let h = (c.width as f64 * c.sensor_height_mm / c.sensor_width_mm).round() as usize;
     let norm = 4.0 * fstop * fstop / std::f64::consts::PI * 2f64.powf(c.exposure_ev);
+    Ok(Setup { file, scene, lens, cs, fstop, focus, w, h, norm })
+}
+
+fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Result<()> {
+    let Setup { file, scene, lens, cs, fstop, focus, w, h, norm } = setup(scene_path, overrides)?;
+    let c = &file.camera;
     eprintln!(
         "{}: f = {:.2} mm, f/{:.2} (working f/{:.2}), focus {} (sensor at {:.3} mm), {}x{} px, {} spp",
         lens.name,
@@ -107,28 +130,84 @@ fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
         c.spp
     );
     let t0 = Instant::now();
-    let r = render::Renderer::new(&lens, &scene, &cs, w, h, c.sensor_width_mm, c.spectral_bins, norm);
-    let mut film = render::Film::new(w, h, c.spectral_bins);
-    r.render_surfaces(&mut film, c.spp, c.ghosts, true);
-    eprintln!("  surfaces done in {:.1}s", t0.elapsed().as_secs_f64());
-    let t1 = Instant::now();
-    r.render_lights(&mut film, c.light_samples, c.ghost_grid, if c.ghosts { c.ghost_threshold } else { f64::INFINITY }, true);
-    if !scene.lights.is_empty() {
-        eprintln!("  lights done in {:.1}s", t1.elapsed().as_secs_f64());
-    }
-    let bad = film.data.iter().filter(|v| !v.is_finite() || **v < 0.0).count();
-    if bad > 0 {
-        eprintln!("  warning: {bad} invalid film values before diffraction");
-    }
-    if c.diffraction {
+    let pitch = c.sensor_width_mm / w as f64;
+    let cpu_diffraction = cpu || std::env::var("LENS_CPU_DIFFRACTION").is_ok();
+    let mut gpu_diffracted = false;
+    let mut film = if cpu {
+        let r = render::Renderer::new(&lens, &scene, &cs, w, h, c.sensor_width_mm, c.spectral_bins, norm);
+        let mut film = render::Film::new(w, h, c.spectral_bins);
+        r.render_surfaces(&mut film, c.spp, c.ghosts, true);
+        eprintln!("  surfaces done in {:.1}s", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
+        r.render_lights(&mut film, c.light_samples, c.ghost_grid, if c.ghosts { c.ghost_threshold } else { f64::INFINITY }, true);
+        if !scene.lights.is_empty() {
+            eprintln!("  lights done in {:.1}s", t1.elapsed().as_secs_f64());
+        }
+        film
+    } else {
+        let mut g = gpu::GpuRenderer::new(gpu::GpuContext::headless()?);
+        g.set_scene(&scene);
+        let settings = gpu_settings(&file, w, h, norm);
+        g.configure(&lens, &settings)?;
+        g.wait()?;
+        let t1 = Instant::now();
+        eprintln!("  GPU setup {:.0} ms", (t1 - t0).as_secs_f64() * 1000.0);
+        if std::env::var("LENS_PROFILE").is_ok() {
+            let (s_ms, l_ms) = g.profile(10)?;
+            eprintln!("  profile: surfaces {s_ms:.1} ms, lights {l_ms:.1} ms per frame");
+            g.reset();
+        }
+        let frames = c.spp.div_ceil(c.spectral_bins as u32 * settings.spp_per_frame).max(1);
+        for _ in 0..frames {
+            g.render_frame();
+        }
+        g.wait()?;
+        let ms = t1.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("  {frames} GPU frames in {ms:.0} ms ({:.1} ms/frame)", ms / frames as f64);
         let t2 = Instant::now();
-        diffraction::apply(&mut film, &lens.iris, lens.surfaces[lens.stop_index].semi_diameter, lens.working_fnumber(), r.pitch);
+        gpu_diffracted = g.resolve(c.diffraction && !cpu_diffraction)?;
+        g.wait()?;
+        if gpu_diffracted {
+            eprintln!("  GPU diffraction done in {:.0} ms", t2.elapsed().as_secs_f64() * 1000.0);
+        }
+        let film = g.read_film()?;
+        if std::env::var("LENS_PROFILE").is_ok() {
+            for diffract in [true, false] {
+                let t3 = Instant::now();
+                g.resolve(diffract)?;
+                g.wait()?;
+                eprintln!("  profile: resolve (diffraction {diffract}) {:.1} ms", t3.elapsed().as_secs_f64() * 1000.0);
+            }
+            eprintln!("  profile: diffraction commands {:?}", g.profile_diffraction()?);
+        }
+        film
+    };
+    if c.diffraction && !gpu_diffracted {
+        let t2 = Instant::now();
+        diffraction::apply(&mut film, &lens.iris, lens.surfaces[lens.stop_index].semi_diameter, lens.working_fnumber(), pitch);
         eprintln!("  diffraction done in {:.1}s", t2.elapsed().as_secs_f64());
     }
     let rgb = film.to_rgb(&cs);
     write_outputs(&rgb, w, h, out, &c.tonemap)?;
     eprintln!("wrote {out} in {:.1}s total", t0.elapsed().as_secs_f64());
     Ok(())
+}
+
+fn gpu_settings(file: &scene::SceneFile, w: usize, h: usize, norm: f64) -> gpu::Settings {
+    let c = &file.camera;
+    gpu::Settings {
+        w,
+        h,
+        bins: c.spectral_bins,
+        sensor_w: c.sensor_width_mm,
+        norm,
+        spp_per_frame: 1,
+        ghosts: c.ghosts,
+        ghost_threshold: c.ghost_threshold,
+        light_grid: c.ghost_grid.div_ceil(16) as u32 * 16,
+        ghost_wavelengths: 0,
+        tonemap: if c.tonemap == "filmic" { gpu::Tonemap::Filmic } else { gpu::Tonemap::Clip },
+    }
 }
 
 fn write_outputs(rgb: &[[f32; 3]], w: usize, h: usize, out: &str, tonemap: &str) -> Result<()> {

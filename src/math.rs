@@ -111,6 +111,12 @@ impl R5 {
         }
         R5 { alpha }
     }
+
+    /// The generators as 0.32 fixed-point numbers.
+    pub fn alphas_fixed(&self) -> [u32; 5] {
+        self.alpha.map(|a| (a * 4294967296.0) as u64 as u32)
+    }
+
     /// Sample `i`, shifted by a per-pixel offset (Cranley-Patterson rotation).
     pub fn sample(&self, i: u64, shift: &[f64; 5]) -> [f64; 5] {
         let mut out = [0.0; 5];
