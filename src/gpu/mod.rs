@@ -1255,6 +1255,35 @@ mod tests {
         }
     }
 
+    /// Ghosts with ray-grid cells several pixels wide: cells cut by an
+    /// aperture must give smooth edges, per pixel and wavelength bin.
+    #[test]
+    fn ghost_edges_match_cpu() {
+        let mut lens = lens(4.0, Some(3000.0));
+        lens.coating = Coating::None;
+        let light = Light { center: Vec3::new(-1500.0, 900.0, -6000.0), radius: 30.0, spectrum: LightSpectrum::Blackbody { t: 4000.0, scale: 1e-6 } };
+        let scene = Scene { rects: vec![], lights: vec![light], background: [0.0; 3] };
+        let mut s = settings(240, 160, 8, true);
+        s.light_grid = 32;
+        let Some(with) = gpu_film(&lens, &scene, &s, 64) else { return };
+        s.ghosts = false;
+        let without = gpu_film(&lens, &scene, &s, 64).unwrap();
+        let cs = ColorSystem::new();
+        let r = crate::render::Renderer::new(&lens, &scene, &cs, 240, 160, 36.0, 8, 1.0);
+        let mut a = Film::new(240, 160, 8);
+        r.render_lights(&mut a, 4_000_000, 256, 0.0, false);
+        let mut b = Film::new(240, 160, 8);
+        r.render_lights(&mut b, 4_000_000, 256, f64::INFINITY, false);
+        let (mut diff, mut sum) = (0.0, 0.0);
+        for i in 0..a.data.len() {
+            let c = (a.data[i] - b.data[i]) as f64;
+            diff += ((with.data[i] - without.data[i]) as f64 - c).abs();
+            sum += c;
+        }
+        println!("ghost pixel diff {}", diff / sum);
+        assert!(diff / sum < 0.06);
+    }
+
     #[test]
     fn veil_matches_cpu() {
         let mut lens = lens(4.0, None);

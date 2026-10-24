@@ -149,6 +149,15 @@ fn iris_contains(x: f32, y: f32) -> bool {
     return r2 <= r * r;
 }
 
+// Radius of (x, y) relative to the iris edge in its direction (≤ 1 inside).
+fn iris_ratio(x: f32, y: f32) -> f32 {
+    let r = sqrt(x * x + y * y);
+    if (P.iris_circular != 0u || P.override_iris != 0u) {
+        return r / P.iris_max_radius;
+    }
+    return r / (P.iris_apothem * iris_edge_unit(atan2(y, x)));
+}
+
 fn reflectance(n1: f32, n2: f32, cos1: f32, l: f32) -> f32 {
     let s = n1 * sqrt(max(1.0 - cos1 * cos1, 0.0));
     let air = (n1 == 1.0) != (n2 == 1.0);
@@ -185,6 +194,14 @@ struct Ray { o: vec3<f32>, d: vec3<f32> }
 
 // Traces `ray` along event path `path`; returns the throughput, or -1 if blocked.
 fn trace_path(ray: ptr<function, Ray>, l: f32, path: u32) -> f32 {
+    var clip = 0.0;
+    return trace_clip(ray, l, path, false, false, &clip);
+}
+
+// With `track`, `clip` gets the largest radius relative to the apertures (> 1
+// if one blocks the ray), to cut ray grids smoothly; with `soft` as well,
+// apertures do not block.
+fn trace_clip(ray: ptr<function, Ray>, l: f32, path: u32, track: bool, soft: bool, clip: ptr<function, f32>) -> f32 {
     let base = P.path_base + path * P.path_stride;
     let len = lens[base];
     var t = 1.0;
@@ -222,10 +239,21 @@ fn trace_path(ray: ptr<function, Ray>, l: f32, path: u32) -> f32 {
         }
         if (tt < 0.0) { return -1.0; }
         let pl = p0 + d * tt;
-        if (pl.x * pl.x + pl.y * pl.y > s.sd * s.sd) { return -1.0; }
+        let r2 = pl.x * pl.x + pl.y * pl.y;
+        if (track) {
+            *clip = max(*clip, sqrt(r2) / s.sd);
+            if (*clip > 1.0 && !soft) { return -1.0; }
+        } else if (r2 > s.sd * s.sd) {
+            return -1.0;
+        }
         let p = (*ray).o + d * tt;
         if (s.stop) {
-            if (!iris_contains(pl.x, pl.y)) { return -1.0; }
+            if (track) {
+                *clip = max(*clip, iris_ratio(pl.x, pl.y));
+                if (*clip > 1.0 && !soft) { return -1.0; }
+            } else if (!iris_contains(pl.x, pl.y)) {
+                return -1.0;
+            }
             (*ray).o = p;
             continue;
         }
@@ -815,6 +843,63 @@ var<workgroup> verts: array<vec4<f32>, 289>;
 var<workgroup> region: vec4<f32>;
 var<workgroup> region_ok: u32;
 
+// Grid rays of a job: emitter point and normal, grid origin and cell (tile
+// vertex units), plane, wavelength, emitted power and event path.
+struct Grid { e: vec3<f32>, ne: vec3<f32>, origin: vec2<f32>, cell: vec2<f32>, z: f32, l: f32, power: f32, path: u32 }
+
+// Sensor position (pixels), flux and clip coordinate (w) of the ray through
+// tile vertex `v`; w = −1 if it is lost. Unless `soft`, rays blocked by an
+// aperture have z = −1 (and w > 1).
+fn grid_ray(gr: Grid, v: u32, soft: bool) -> vec4<f32> {
+    let lost = vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    let q = vec3<f32>(gr.origin + vec2<f32>(f32(v % 17u), f32(v / 17u)) * gr.cell, gr.z);
+    let dv = q - gr.e;
+    let dist2 = dot(dv, dv);
+    let d = dv / sqrt(dist2);
+    if (d.z <= 0.0) { return lost; }
+    let o = q - d * ((q.z - P.front_z) / d.z);
+    if (occluded(o, -d, length(o - gr.e))) { return lost; }
+    var ray = Ray(o, d);
+    var clip = 0.0;
+    let t = trace_clip(&ray, gr.l, gr.path, true, soft, &clip);
+    if (t > 0.0 && ray.d.z > 0.0) {
+        let p = ray.o + ray.d * ((P.sensor_z - ray.o.z) / ray.d.z);
+        let f = gr.power * max(dot(d, gr.ne), 0.0) * d.z / dist2 * t;
+        return vec4<f32>(-p.x / P.pitch + f32(P.w) * 0.5, f32(P.h) * 0.5 + p.y / P.pitch, f, clip);
+    }
+    return select(lost, vec4<f32>(0.0, 0.0, -1.0, clip), clip > 1.0 && !soft);
+}
+
+fn passes(v: vec4<f32>) -> bool {
+    return v.w >= 0.0 && v.w <= 1.0;
+}
+
+// Tile vertex `v`, blocked by an aperture: sensor position, flux and clip
+// coordinate linearly extrapolated from the passing vertices beyond it (the
+// clip coordinate at least that where it was blocked), else traced through
+// the apertures.
+fn edge_vertex(gr: Grid, v: u32) -> vec4<f32> {
+    let i = i32(v % 17u);
+    let j = i32(v / 17u);
+    var sum = vec4<f32>(0.0);
+    var n = 0.0;
+    for (var k = 0; k < 9; k++) {
+        let di = k % 3 - 1;
+        let dj = k / 3 - 1;
+        let i2 = i + 2 * di;
+        let j2 = j + 2 * dj;
+        if (k == 4 || i2 < 0 || i2 > 16 || j2 < 0 || j2 > 16) { continue; }
+        let p = verts[(j + dj) * 17 + i + di];
+        let p2 = verts[j2 * 17 + i2];
+        if (passes(p) && passes(p2)) {
+            sum += vec4<f32>(2.0 * p.xy - p2.xy, p.z, 2.0 * p.w - p2.w);
+            n += 1.0;
+        }
+    }
+    if (n == 0.0) { return grid_ray(gr, v, true); }
+    return vec4<f32>(sum.xyz / n, max(verts[v].w, sum.w / n));
+}
+
 fn splat(x: f32, y: f32, bin: u32, v: f32) {
     let fx = x - 0.5;
     let fy = y - 0.5;
@@ -832,30 +917,54 @@ fn splat(x: f32, y: f32, bin: u32, v: f32) {
     }
 }
 
-// Rasterises a triangle (pixel coordinates) carrying `flux`. Large
+// Rasterises a triangle (pixel coordinates, w the clip coordinate) carrying
+// `flux` where the interpolated clip coordinate is at most 1. Large
 // triangles go to the quarter-resolution film: they only occur in widely
 // spread, smooth ghosts and would otherwise dominate the cost.
-fn raster_triangle(a0: vec3<f32>, b0: vec3<f32>, c0: vec3<f32>, flux: f32, bin: u32) {
+fn raster_triangle(a0: vec4<f32>, b0: vec4<f32>, c0: vec4<f32>, flux: f32, bin: u32) {
+    if (min(a0.w, min(b0.w, c0.w)) > 1.0) { return; }
+    let m = (a0 + b0 + c0) / 3.0;
     let area0 = 0.5 * ((b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y));
     if (abs(area0) < 1.0) {
-        splat((a0.x + b0.x + c0.x) / 3.0, (a0.y + b0.y + c0.y) / 3.0, bin, flux);
+        if (m.w <= 1.0) { splat(m.x, m.y, bin, flux); }
         return;
     }
     let low = abs(area0) > 16.0;
     let k = select(1.0, 0.25, low);
-    let a = a0 * k;
-    let b = b0 * k;
-    let c = c0 * k;
+    let a = a0.xy * k;
+    let b = b0.xy * k;
+    let c = c0.xy * k;
     let area = area0 * k * k;
     let fw = select(P.w, (P.w + 3u) / 4u, low);
     let fh = select(P.h, (P.h + 3u) / 4u, low);
-    let x0 = max(floor(min(a.x, min(b.x, c.x))), 0.0);
-    let x1 = min(ceil(max(a.x, max(b.x, c.x))), f32(fw));
-    let y0 = max(floor(min(a.y, min(b.y, c.y))), 0.0);
-    let y1 = min(ceil(max(a.y, max(b.y, c.y))), f32(fh));
+    // Bounds of the passing part: passing corners and edge crossings of clip = 1.
+    var lo = vec2<f32>(1e30);
+    var hi = vec2<f32>(-1e30);
+    for (var e = 0u; e < 3u; e++) {
+        var p = a0;
+        var q = b0;
+        switch e {
+            case 1u: { p = b0; q = c0; }
+            case 2u: { p = c0; q = a0; }
+            default: {}
+        }
+        if (p.w <= 1.0) {
+            lo = min(lo, p.xy);
+            hi = max(hi, p.xy);
+        }
+        if ((p.w <= 1.0) != (q.w <= 1.0)) {
+            let x = mix(p.xy, q.xy, (1.0 - p.w) / (q.w - p.w));
+            lo = min(lo, x);
+            hi = max(hi, x);
+        }
+    }
+    let x0 = max(floor(lo.x * k), 0.0);
+    let x1 = min(ceil(hi.x * k), f32(fw));
+    let y0 = max(floor(lo.y * k), 0.0);
+    let y1 = min(ceil(hi.y * k), f32(fh));
     if (x0 >= x1 || y0 >= y1) { return; }
     if ((x1 - x0) * (y1 - y0) > 65536.0) {
-        splat((a0.x + b0.x + c0.x) / 3.0, (a0.y + b0.y + c0.y) / 3.0, bin, flux);
+        if (m.w <= 1.0) { splat(m.x, m.y, bin, flux); }
         return;
     }
     let v = flux / abs(area);
@@ -866,7 +975,8 @@ fn raster_triangle(a0: vec3<f32>, b0: vec3<f32>, c0: vec3<f32>, flux: f32, bin: 
             let x = f32(px) + 0.5;
             let w0 = ((b.x - x) * (c.y - y) - (c.x - x) * (b.y - y)) * inv;
             let w1 = ((c.x - x) * (a.y - y) - (a.x - x) * (c.y - y)) * inv;
-            if (w0 >= 0.0 && w1 >= 0.0 && 1.0 - w0 - w1 >= 0.0) {
+            let w2 = 1.0 - w0 - w1;
+            if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 && w0 * a0.w + w1 * b0.w + w2 * c0.w <= 1.0) {
                 let idx = (py * fw + px) * P.bins + bin;
                 if (low) { lowres_add(idx, v); } else { film_add(idx, v); }
             }
@@ -910,59 +1020,48 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
     let cell = vec2<f32>((reg.z - reg.x) / f32(g), (reg.w - reg.y) / f32(g));
     let bin_width = LAMBDA_RANGE / f32(P.bins);
     let l = LAMBDA_MIN + bin_width * (f32(job.z) + jf.x);
-    let radiance = light_spectrum(li, l);
     let e = lg.c + lg.t1 * (jf.y * lg.radius) + lg.t2 * (jf.z * lg.radius);
-    let ne = normalize(-lg.c);
-    let area_e = PI * lg.radius * lg.radius;
+    let corner = vec2<f32>(f32(tx * 16u) + jf.w - 0.5, f32(ty * 16u) + jf2.x - 0.5);
+    let gr = Grid(e, normalize(-lg.c), reg.xy + corner * cell, cell, z_plane, l, light_spectrum(li, l) * PI * lg.radius * lg.radius, job.y);
     for (var v = li_idx; v < 289u; v += 256u) {
-        let vi = tx * 16u + v % 17u;
-        let vj = ty * 16u + v / 17u;
-        let q = vec3<f32>(reg.x + (f32(vi) + jf.w - 0.5) * cell.x, reg.y + (f32(vj) + jf2.x - 0.5) * cell.y, z_plane);
-        let dv = q - e;
-        let dist2 = dot(dv, dv);
-        let d = dv / sqrt(dist2);
-        var out = vec4<f32>(0.0);
-        if (d.z > 0.0) {
-            let o = q - d * ((q.z - P.front_z) / d.z);
-            if (!occluded(o, -d, length(o - e))) {
-                var ray = Ray(o, d);
-                let t = trace_path(&ray, l, job.y);
-                if (t > 0.0 && ray.d.z > 0.0) {
-                    let p = ray.o + ray.d * ((P.sensor_z - ray.o.z) / ray.d.z);
-                    let f = radiance * area_e * max(dot(d, ne), 0.0) * d.z / dist2 * t;
-                    out = vec4<f32>(-p.x / P.pitch + f32(P.w) * 0.5, f32(P.h) * 0.5 + p.y / P.pitch, f, 1.0);
-                }
-            }
-        }
-        verts[v] = out;
+        verts[v] = grid_ray(gr, v, false);
     }
     workgroupBarrier();
     // jf2.y weights jobs that sample only some of the wavelength bins.
     let scale = cell.x * cell.y * P.norm * bin_width * jf2.y / (P.pitch * P.pitch);
     let i00 = lid.y * 17u + lid.x;
-    let a = verts[i00];
-    let b = verts[i00 + 1u];
-    let c = verts[i00 + 18u];
-    let d = verts[i00 + 17u];
-    let valid = a.w + b.w + c.w + d.w;
+    var a = verts[i00];
+    var b = verts[i00 + 1u];
+    var c = verts[i00 + 18u];
+    var d = verts[i00 + 17u];
+    let cw = vec4<f32>(a.w, b.w, c.w, d.w);
+    // Corners whose rays pass the apertures.
+    let inside = select(vec4<f32>(0.0), vec4<f32>(1.0), cw >= vec4<f32>(0.0) & cw <= vec4<f32>(1.0));
     // Direct images of lights within the PSF bank: only collect the flux; the
     // psf_splat pass images it through the wave-optical PSF.
     if (P.bank_on != 0u && !ghost && bank_pos(e, false).ok) {
-        var flux = 0.0;
-        if (valid == 4.0) {
-            flux = 0.25 * (a.z + b.z + c.z + d.z) * scale;
-        } else {
-            flux = 0.25 * (a.z * a.w + b.z * b.w + c.z * c.w + d.z * d.w) * scale;
-        }
+        let flux = 0.25 * dot(vec4<f32>(a.z, b.z, c.z, d.z), inside) * scale;
         if (flux > 0.0) { job_flux_add(first_task, flux); }
         return;
     }
-    if (valid == 4.0) {
+    // Quad cut by an aperture: blocked corners are placed by extrapolation, and
+    // the clip coordinate cuts the quad (after Hullin et al. 2011).
+    if (any(inside > vec4<f32>(0.0)) && any(cw > vec4<f32>(1.0))) {
+        if (a.z < 0.0) { a = edge_vertex(gr, i00); }
+        if (b.z < 0.0) { b = edge_vertex(gr, i00 + 1u); }
+        if (c.z < 0.0) { c = edge_vertex(gr, i00 + 18u); }
+        if (d.z < 0.0) { d = edge_vertex(gr, i00 + 17u); }
+    }
+    // Cut quads below a pixel keep their unbiased corner samples.
+    let ac = c.xy - a.xy;
+    let bd = d.xy - b.xy;
+    let cut = abs(ac.x * bd.y - ac.y * bd.x) >= 2.0;
+    if (all(vec4<f32>(a.w, b.w, c.w, d.w) >= vec4<f32>(0.0)) && (all(cw <= vec4<f32>(1.0)) || cut)) {
         let flux = 0.25 * (a.z + b.z + c.z + d.z) * scale;
-        raster_triangle(a.xyz, b.xyz, c.xyz, 0.5 * flux, job.z);
-        raster_triangle(a.xyz, c.xyz, d.xyz, 0.5 * flux, job.z);
-    } else if (valid > 0.0) {
-        // Partly clipped quad: each surviving corner carries its quarter.
+        raster_triangle(a, b, c, 0.5 * flux, job.z);
+        raster_triangle(a, c, d, 0.5 * flux, job.z);
+    } else {
+        // Each passing corner carries its quarter.
         for (var k = 0u; k < 4u; k++) {
             var cv = a;
             switch k {
@@ -971,7 +1070,7 @@ fn light_grid(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
                 case 3u: { cv = d; }
                 default: {}
             }
-            if (cv.w > 0.0) { splat(cv.x, cv.y, job.z, 0.25 * cv.z * scale); }
+            if (inside[k] > 0.0) { splat(cv.x, cv.y, job.z, 0.25 * cv.z * scale); }
         }
     }
 }
