@@ -16,7 +16,7 @@ const MAX_HALF: usize = 1024;
 
 /// |FT(pupil)|² on an M×M grid, DC at index 0. Sample k corresponds to an
 /// image-plane offset of k·λ·N/Q.
-fn pupil_spectrum(iris: &Iris) -> Vec<f64> {
+fn pupil_spectrum(iris: &Iris, stop_radius: f64) -> Vec<f64> {
     let unit = M as f64 / (2.0 * Q); // samples per nominal radius
     let ss = 4;
     let mut buf: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); M * M];
@@ -32,7 +32,7 @@ fn pupil_spectrum(iris: &Iris) -> Vec<f64> {
                 for sx in 0..ss {
                     let x = (i as f64 + (sx as f64 + 0.5) / ss as f64 - 0.5) / unit * iris.radius;
                     let y = (j as f64 + (sy as f64 + 0.5) / ss as f64 - 0.5) / unit * iris.radius;
-                    if iris.contains(x, y) {
+                    if iris.contains(x, y) && x * x + y * y <= stop_radius * stop_radius {
                         cover += 1;
                     }
                 }
@@ -101,7 +101,8 @@ fn kernel(spec: &[f64], l: f64, n_w: f64, pitch: f64, half: usize) -> Vec<f64> {
                     continue;
                 }
                 let ki = if i < M / 2 { i as f64 } else { i as f64 - M as f64 };
-                let px = ki * dxi + half as f64;
+                // Film columns run along −x on the sensor.
+                let px = -ki * dxi + half as f64;
                 if px < 0.0 || px >= (size - 1) as f64 {
                     continue;
                 }
@@ -135,9 +136,10 @@ fn kernel(spec: &[f64], l: f64, n_w: f64, pitch: f64, half: usize) -> Vec<f64> {
 }
 
 /// Convolves every wavelength bin of `film` with the iris' diffraction PSF.
-/// `n_w` is the image-space working f-number, `pitch` the pixel pitch in mm.
-pub fn apply(film: &mut Film, iris: &Iris, n_w: f64, pitch: f64) {
-    let spec = pupil_spectrum(iris);
+/// `n_w` is the image-space working f-number, `pitch` the pixel pitch in mm;
+/// the opening is the iris clipped by the stop's housing of `stop_radius`.
+pub fn apply(film: &mut Film, iris: &Iris, stop_radius: f64, n_w: f64, pitch: f64) {
+    let spec = pupil_spectrum(iris, stop_radius);
     let (w, h, bins) = (film.w, film.h, film.bins);
     let halves: Vec<usize> = (0..bins)
         .map(|b| {
@@ -153,28 +155,29 @@ pub fn apply(film: &mut Film, iris: &Iris, n_w: f64, pitch: f64) {
         let half = halves[b];
         let k = &kernels[b];
         let size = 2 * half + 1;
-        let mut kb: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); pw * ph];
+        // f64: f32 rounding of very bright lights would spread noise over the frame.
+        let mut kb: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); pw * ph];
         for j in 0..size {
             for i in 0..size {
                 let x = (i as i64 - half as i64).rem_euclid(pw as i64) as usize;
                 let y = (j as i64 - half as i64).rem_euclid(ph as i64) as usize;
-                kb[y * pw + x] = Complex::new(k[j * size + i] as f32, 0.0);
+                kb[y * pw + x] = Complex::new(k[j * size + i], 0.0);
             }
         }
-        let mut img: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); pw * ph];
+        let mut img: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); pw * ph];
         for y in 0..h {
             for x in 0..w {
-                img[y * pw + x] = Complex::new(film.data[(y * w + x) * bins + b], 0.0);
+                img[y * pw + x] = Complex::new(film.data[(y * w + x) * bins + b] as f64, 0.0);
             }
         }
         fft2(&mut kb, pw, ph, false);
         fft2(&mut img, pw, ph, false);
         img.par_iter_mut().zip(kb.par_iter()).for_each(|(a, k)| *a *= *k);
         fft2(&mut img, pw, ph, true);
-        let s = 1.0 / (pw * ph) as f32;
+        let s = 1.0 / (pw * ph) as f64;
         for y in 0..h {
             for x in 0..w {
-                film.data[(y * w + x) * bins + b] = img[y * pw + x].re * s;
+                film.data[(y * w + x) * bins + b] = (img[y * pw + x].re * s).max(0.0) as f32;
             }
         }
     }

@@ -19,6 +19,7 @@ The first lens is a 50 mm f/3.5 Cooke triplet (`lenses/cooke-triplet.lens`).
 | Diffraction, star bursts | Fraunhofer PSF of the iris shape per wavelength, convolved with the image |
 | Bokeh shape | Iris with straight or curved blades; round when wide open |
 | Focus breathing | Unit focusing; best focus found like contrast AF (minimum RMS blur) |
+| Manufacturing errors | Optional lateral decentering of individual elements (one-sided softness) |
 
 ## Usage
 
@@ -54,6 +55,7 @@ coating = "single"                  # or "none"
 iris_blades = 6
 iris_rotation_deg = 0
 iris_curvature = 0.0                # 0 straight blades, 1 circular
+decenter = [[1, 0.1, 0.0]]          # element 1 (0 = front) shifted 0.1 mm in x
 spp = 64                            # samples per pixel (scene surfaces)
 light_samples = 4000000             # per light, direct image
 ghost_grid = 128                    # ray grid per light and ghost path
@@ -127,8 +129,10 @@ nominal distance to the image plane; focusing moves the sensor.
 - Real rays near the axis converge to the paraxial focus.
 - Uniform scene renders to the lens' Fresnel transmission at the image centre.
 - Backward (camera) and forward (light) tracing agree on the flux from a
-  source within 1 %, on and off axis, wide open and stopped down.
-- Ghost energy from the backward pass matches the forward ray-grid ghosts.
+  source within 1 %: on and off axis, f/3.5 to f/16, with a decentred element.
+- Ghost energy from the backward pass matches the forward ray-grid ghosts
+  within 4 % (5° and 17° field); the ray grid reproduces the direct image.
+- Output images are upright.
 
 ## Approach
 

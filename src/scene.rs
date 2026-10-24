@@ -53,6 +53,10 @@ pub struct CameraCfg {
     pub iris_rotation_deg: f64,
     #[serde(default)]
     pub iris_curvature: f64,
+    /// Manufacturing error: lateral shift in mm of glass elements, `[[element, dx, dy], ...]`
+    /// with elements numbered from 0 at the front.
+    #[serde(default)]
+    pub decenter: Vec<[f64; 3]>,
     #[serde(default = "d_spp")]
     pub spp: u32,
     #[serde(default)]

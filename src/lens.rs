@@ -22,6 +22,8 @@ pub struct Surface {
     pub is_stop: bool,
     /// Vertex position on the axis.
     pub z: f64,
+    /// Lateral misalignment (manufacturing error) of the surface.
+    pub decenter: (f64, f64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -165,7 +167,7 @@ impl Lens {
             if is_stop && material.is_some() {
                 bail!("line {}: the stop must be in air", lineno + 1);
             }
-            surfaces.push(Surface { radius, thickness, material, semi_diameter, is_stop, z: 0.0 });
+            surfaces.push(Surface { radius, thickness, material, semi_diameter, is_stop, z: 0.0, decenter: (0.0, 0.0) });
         }
         if surfaces.is_empty() || surfaces.len() > MAX_SURFACES {
             bail!("lens must have 1..={MAX_SURFACES} surfaces");
@@ -190,6 +192,37 @@ impl Lens {
             forward_path,
             backward_path,
         })
+    }
+
+    /// Glass elements as ranges of surface indices (front to back).
+    pub fn elements(&self) -> Vec<std::ops::RangeInclusive<usize>> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.surfaces.len() {
+            if self.surfaces[i].material.is_some() {
+                let start = i;
+                while i < self.surfaces.len() && self.surfaces[i].material.is_some() {
+                    i += 1;
+                }
+                out.push(start..=i.min(self.surfaces.len() - 1));
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Shifts glass element `e` (0-based, front to back) sideways by (dx, dy) mm.
+    pub fn decenter_element(&mut self, e: usize, dx: f64, dy: f64) -> Result<()> {
+        let elements = self.elements();
+        let Some(range) = elements.get(e) else { bail!("lens has no element {e}") };
+        for i in range.clone() {
+            self.surfaces[i].decenter = (dx, dy);
+        }
+        Ok(())
+    }
+
+    pub fn is_centered(&self) -> bool {
+        self.surfaces.iter().all(|s| s.decenter == (0.0, 0.0))
     }
 
     pub fn load(path: &str) -> Result<Lens> {
@@ -315,7 +348,7 @@ impl Lens {
             return Some((ray.o + ray.d * t, Vec3::new(0.0, 0.0, -1.0)));
         }
         let r = s.radius;
-        let c = Vec3::new(0.0, 0.0, s.z + r);
+        let c = Vec3::new(s.decenter.0, s.decenter.1, s.z + r);
         let oc = ray.o - c;
         let b = oc.dot(ray.d);
         let cc = oc.dot(oc) - r * r;
@@ -344,7 +377,7 @@ impl Lens {
             let s = sin1_n / n;
             if s >= 1.0 { None } else { Some((1.0 - s * s).sqrt()) }
         };
-        let air_interface = n1 == 1.0 || n2 == 1.0;
+        let air_interface = (n1 == 1.0) != (n2 == 1.0);
         match self.coating {
             Coating::Single { n: nc, lambda0 } if air_interface => {
                 let (na, ng) = if n1 == 1.0 { (n1, n2) } else { (n2, n1) };
@@ -381,9 +414,10 @@ impl Lens {
             let i = ev.surface as usize;
             let s = &self.surfaces[i];
             let (p, mut nrm) = self.intersect(i, &ray)?;
-            let r2 = p.x * p.x + p.y * p.y;
+            let (px, py) = (p.x - s.decenter.0, p.y - s.decenter.1);
+            let r2 = px * px + py * py;
             if s.is_stop {
-                if !self.iris.contains(p.x, p.y) || r2 > s.semi_diameter * s.semi_diameter {
+                if !self.iris.contains(px, py) || r2 > s.semi_diameter * s.semi_diameter {
                     return None;
                 }
                 ray.o = p;

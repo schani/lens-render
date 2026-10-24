@@ -1,0 +1,40 @@
+# Daylight: a chart in focus at 2.5 m on a receding checkerboard floor,
+# foliage far behind, and the sun just outside the frame (ghosts, glare).
+background = [0.55, 0.7, 1.0]
+
+[camera]
+lens = "../lenses/cooke-triplet.lens"
+width = 1200
+focus_distance = 2.5
+spp = 64
+iris_blades = 6
+exposure_ev = -0.3
+
+[[object]]
+type = "plane"
+center = [0.15, -0.05, 2.5]
+size = [0.75, 0.5]
+texture = { kind = "chart" }
+
+# Floor.
+[[object]]
+type = "plane"
+center = [0, -0.6, 15.0]
+size = [16, 30]
+rotate = [90, 0, 0]
+texture = { kind = "checker", n = 32, a = [0.08, 0.06, 0.05], b = [0.7, 0.68, 0.6] }
+
+# Foliage.
+[[object]]
+type = "plane"
+center = [0, 2.0, 25.0]
+size = [60, 6]
+texture = { kind = "noise", scale = 120, palette = [[0.02, 0.05, 0.01], [0.08, 0.2, 0.03], [0.25, 0.4, 0.08], [0.6, 0.7, 0.3]] }
+
+# Sun, just outside the top right of the frame.
+[[object]]
+type = "light"
+center = [45, 30, 100]
+radius = 0.47
+temperature = 5800
+radiance = 50000

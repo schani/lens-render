@@ -47,7 +47,6 @@ pub fn chief_ray_y0(lens: &Lens, theta: f64, l: f64) -> f64 {
 pub struct Bundle {
     /// Rays leaving the last surface, with throughput.
     pub rays: Vec<(Ray, f64, f64)>, // (ray, throughput, wavelength)
-    pub launched_per_wavelength: usize,
 }
 
 /// Collimated bundle at field angle `theta` sampled on a square grid around the chief ray.
@@ -56,14 +55,11 @@ pub fn field_bundle(lens: &Lens, theta: f64, wls: &[f64], grid: usize, fan: Opti
     let r_ep = lens.iris.max_radius / p.entrance_pupil_mag;
     let half = r_ep * 2.0;
     let mut rays = Vec::new();
-    let mut launched = 0;
     for &l in wls {
         let y0 = chief_ray_y0(lens, theta, LAMBDA_D);
         let m = lens.media(l);
         let d = Vec3::new(0.0, theta.sin(), theta.cos());
-        let mut count = 0;
         let mut push = |x: f64, y: f64| {
-            count += 1;
             let ray = Ray { o: Vec3::new(x, y0 + y, START_Z), d };
             if let Some((r, t)) = lens.trace_forward(ray, l, &m) {
                 rays.push((r, t, l));
@@ -86,9 +82,8 @@ pub fn field_bundle(lens: &Lens, theta: f64, wls: &[f64], grid: usize, fan: Opti
                 }
             }
         }
-        launched = count;
     }
-    Bundle { rays, launched_per_wavelength: launched }
+    Bundle { rays }
 }
 
 fn at_z(r: &Ray, z: f64) -> (f64, f64) {
@@ -340,38 +335,3 @@ fn draw_layout(lens: &Lens, max_theta: f64, path: &str) -> Result<()> {
     c.save(path)
 }
 
-/// Largest ray height on every surface for a full bundle at field angle `theta`.
-pub fn ray_heights(lens: &Lens, theta: f64) -> Vec<f64> {
-    let p = lens.paraxial_data(LAMBDA_D);
-    let r_ep = lens.iris.max_radius / p.entrance_pupil_mag;
-    let mut out = vec![0.0f64; lens.surfaces.len()];
-    for l in [420.0, LAMBDA_D, 700.0] {
-        let m = lens.media(l);
-        let y0 = chief_ray_y0(lens, theta, l);
-        let g = 80;
-        for iy in 0..g {
-            for ix in 0..g {
-                let x = ((ix as f64 + 0.5) / g as f64 * 2.0 - 1.0) * r_ep * 2.0;
-                let y = ((iy as f64 + 0.5) / g as f64 * 2.0 - 1.0) * r_ep * 2.0;
-                let ray = Ray { o: Vec3::new(x, y0 + y, START_Z), d: Vec3::new(0.0, theta.sin(), theta.cos()) };
-                let mut cur = ray;
-                let mut hs = Vec::new();
-                for ev in &lens.forward_path {
-                    match lens.trace_path(cur, l, &m, std::slice::from_ref(ev)) {
-                        Some((r, _)) => {
-                            hs.push(r.o.x.hypot(r.o.y));
-                            cur = r;
-                        }
-                        None => break,
-                    }
-                }
-                if hs.len() == out.len() {
-                    for (o, h) in out.iter_mut().zip(hs) {
-                        *o = o.max(h);
-                    }
-                }
-            }
-        }
-    }
-    out
-}

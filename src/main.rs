@@ -83,6 +83,9 @@ fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
         "single" => lens::Coating::Single { n: 1.38, lambda0: 550.0 },
         other => bail!("unknown coating {other}"),
     };
+    for d in &c.decenter {
+        lens.decenter_element(d[0] as usize, d[1], d[2])?;
+    }
     let fstop = c.fstop.unwrap_or_else(|| lens.max_aperture());
     lens.set_aperture(fstop, c.iris_blades, c.iris_rotation_deg, c.iris_curvature)?;
     let focus = if c.focus_distance.is_finite() { Some(c.focus_distance * 1000.0) } else { None };
@@ -119,7 +122,7 @@ fn render(scene_path: &str, out: &str, overrides: &[String]) -> Result<()> {
     }
     if c.diffraction {
         let t2 = Instant::now();
-        diffraction::apply(&mut film, &lens.iris, lens.working_fnumber(), r.pitch);
+        diffraction::apply(&mut film, &lens.iris, lens.surfaces[lens.stop_index].semi_diameter, lens.working_fnumber(), r.pitch);
         eprintln!("  diffraction done in {:.1}s", t2.elapsed().as_secs_f64());
     }
     let rgb = film.to_rgb(&cs);
