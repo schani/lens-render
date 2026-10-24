@@ -560,7 +560,10 @@ impl Viewer {
                     self.undo();
                 }
             }
-            "overlays" => (self.show_fans, self.show_ghosts, self.show_focus) = (true, true, true),
+            "overlays" => {
+                (self.show_fans, self.show_ghosts, self.show_focus) = (true, true, true);
+                k.fstop = 1.4;
+            }
             "aberrations" => self.tab = LensTab::Aberrations,
             "pupils" => self.tab = LensTab::Pupils,
             "psf" => self.tab = LensTab::Psf,
@@ -620,7 +623,9 @@ impl Viewer {
             });
             self.analysis_job = Some((applies, rx));
         }
-        if self.tab == LensTab::Mtf || self.demo.is_some() {
+        // The demo needs its MTF ready when the tab comes up; editing is over by then.
+        let demo_mtf = self.demo.as_ref().and_then(|d| d.segment()).is_some_and(|(s, _)| ["aberrations", "pupils", "psf", "mtf"].contains(&s.id.as_str()));
+        if self.tab == LensTab::Mtf || demo_mtf {
             if let Some((_, rx)) = &self.mtf_job {
                 if let Ok(c) = rx.try_recv() {
                     self.mtf = Some((self.mtf_job.take().unwrap().0, c));

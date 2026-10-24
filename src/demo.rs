@@ -5,8 +5,9 @@
 use eframe::egui;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Instant;
 
 #[derive(Deserialize, Clone)]
 pub struct Segment {
@@ -23,13 +24,17 @@ struct Timeline {
 }
 
 pub struct Demo {
-    dir: PathBuf,
     fps: f64,
     pub segments: Vec<Segment>,
     /// Frames captured so far.
     frame: Arc<AtomicUsize>,
     capturing: Arc<AtomicBool>,
+    /// When the screenshot on its way was requested.
+    requested: Mutex<Option<Instant>>,
     writing: Arc<AtomicUsize>,
+    /// Frames to write, for writer threads of our own (the shared pool may
+    /// be busy with the viewer's analyses).
+    frames: mpsc::Sender<(usize, Arc<egui::ColorImage>)>,
     /// Simulated pointer: position and whether the button is down.
     pub pointer: Option<(egui::Pos2, bool)>,
     sent: Option<(egui::Pos2, bool)>,
@@ -39,13 +44,30 @@ impl Demo {
     pub fn load(dir: PathBuf) -> anyhow::Result<Demo> {
         let t: Timeline = serde_json::from_str(&std::fs::read_to_string(dir.join("timeline.json"))?)?;
         std::fs::create_dir_all(dir.join("frames"))?;
+        let (tx, rx) = mpsc::channel::<(usize, Arc<egui::ColorImage>)>();
+        let rx = Arc::new(Mutex::new(rx));
+        let writing: Arc<AtomicUsize> = Default::default();
+        for _ in 0..4 {
+            let (rx, writing, dir) = (rx.clone(), writing.clone(), dir.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let Ok((n, img)) = rx.lock().unwrap().recv() else { return };
+                    let rgb: Vec<u8> = img.pixels.iter().flat_map(|c| [c.r(), c.g(), c.b()]).collect();
+                    if let Some(i) = image::RgbImage::from_raw(img.size[0] as u32, img.size[1] as u32, rgb) {
+                        let _ = i.save(dir.join(format!("frames/{n:05}.jpg")));
+                    }
+                    writing.fetch_sub(1, Ordering::Relaxed);
+                }
+            });
+        }
         Ok(Demo {
-            dir,
             fps: t.fps,
             segments: t.segments,
             frame: Default::default(),
             capturing: Default::default(),
-            writing: Default::default(),
+            requested: Mutex::new(None),
+            writing,
+            frames: tx,
             pointer: None,
             sent: None,
         })
@@ -69,23 +91,21 @@ impl Demo {
         if self.time() >= end {
             return self.writing.load(Ordering::Relaxed) == 0;
         }
-        if self.capturing.load(Ordering::Relaxed) || self.writing.load(Ordering::Relaxed) > 16 {
+        // A screenshot that never arrived is asked for again.
+        let stale = self.requested.lock().unwrap().is_some_and(|t| t.elapsed().as_secs_f64() > 3.0);
+        if (self.capturing.load(Ordering::Relaxed) && !stale) || self.writing.load(Ordering::Relaxed) > 16 {
             return false;
         }
         self.capturing.store(true, Ordering::Relaxed);
-        let (frame, capturing, writing, dir) = (self.frame.clone(), self.capturing.clone(), self.writing.clone(), self.dir.clone());
+        *self.requested.lock().unwrap() = Some(Instant::now());
+        let (frame, capturing, writing, frames) = (self.frame.clone(), self.capturing.clone(), self.writing.clone(), self.frames.clone());
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+            if !capturing.swap(false, Ordering::Relaxed) {
+                return;
+            }
             let n = frame.fetch_add(1, Ordering::Relaxed);
-            capturing.store(false, Ordering::Relaxed);
             writing.fetch_add(1, Ordering::Relaxed);
-            let img = img.clone();
-            rayon::spawn(move || {
-                let rgb: Vec<u8> = img.pixels.iter().flat_map(|c| [c.r(), c.g(), c.b()]).collect();
-                if let Some(i) = image::RgbImage::from_raw(img.size[0] as u32, img.size[1] as u32, rgb) {
-                    let _ = i.save(dir.join(format!("frames/{n:05}.jpg")));
-                }
-                writing.fetch_sub(1, Ordering::Relaxed);
-            });
+            let _ = frames.send((n, img.clone()));
         })));
         false
     }
