@@ -524,15 +524,19 @@ fn rotate2(v: vec2<f32>, a: f32) -> vec2<f32> {
     return vec2<f32>(c * v.x - s * v.y, s * v.x + c * v.y);
 }
 
-// Entry kernels: (2·half + 1)·sub cells per side, `sub` per pixel, centred
-// on the chief-ray point; layout (half, sub, CDF offset) in the lens blob.
+// Entry kernels, centred on the chief-ray point; layout in the lens blob:
+// core (sub-pixel cells) and wing (pixel cells, zero inside the core square).
 struct Kernel { half: u32, sub: u32, base: u32, size: u32 }
+struct Kernels { core: Kernel, wing: Kernel, core_fraction: f32 }
 
-fn bank_kernel(entry: u32) -> Kernel {
-    let b = P.bank_layout_off + 3u * entry;
-    let half = lens[b];
+fn bank_kernels(entry: u32) -> Kernels {
+    let b = P.bank_layout_off + 6u * entry;
+    let hc = lens[b];
     let sub = lens[b + 1u];
-    return Kernel(half, sub, P.bank_cdf_off + lens[b + 2u], (2u * half + 1u) * sub);
+    let hw = lens[b + 3u];
+    return Kernels(Kernel(hc, sub, P.bank_cdf_off + lens[b + 2u], (2u * hc + 1u) * sub),
+                   Kernel(hw, 1u, P.bank_cdf_off + lens[b + 4u], 2u * hw + 1u),
+                   bitcast<f32>(lens[b + 5u]));
 }
 
 // Offset from the reference of kernel cell `i` at fractional position (jx, jy) in it.
@@ -542,9 +546,7 @@ fn bank_offset(k: Kernel, i: u32, jx: f32, jy: f32) -> vec2<f32> {
     return vec2<f32>(start + (f32(i % k.size) + jx) * cell, start + (f32(i / k.size) + jy) * cell);
 }
 
-// Sensor point drawn from the PSF of entry `pk`.
-fn bank_sample(pk: BankPick, u: f32, jx: f32, jy: f32) -> vec2<f32> {
-    let k = bank_kernel(pk.entry);
+fn cdf_find(k: Kernel, u: f32) -> u32 {
     var lo = 0u;
     var hi = k.size * k.size - 1u;
     loop {
@@ -552,7 +554,19 @@ fn bank_sample(pk: BankPick, u: f32, jx: f32, jy: f32) -> vec2<f32> {
         let mid = (lo + hi) / 2u;
         if (tables[k.base + mid] < u) { lo = mid + 1u; } else { hi = mid; }
     }
-    return rotate2(pk.reference + bank_offset(k, lo, jx, jy), pk.rot);
+    return lo;
+}
+
+// Sensor point drawn from the PSF of entry `pk`.
+fn bank_sample(pk: BankPick, u: f32, jx: f32, jy: f32) -> vec2<f32> {
+    let ks = bank_kernels(pk.entry);
+    var off: vec2<f32>;
+    if (u < ks.core_fraction) {
+        off = bank_offset(ks.core, cdf_find(ks.core, u / ks.core_fraction), jx, jy);
+    } else {
+        off = bank_offset(ks.wing, cdf_find(ks.wing, (u - ks.core_fraction) / (1.0 - ks.core_fraction)), jx, jy);
+    }
+    return rotate2(pk.reference + off, pk.rot);
 }
 
 // Film index (any bin offset added by the caller) of a sensor point, or −1.
@@ -981,15 +995,21 @@ fn psf_splat(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_ind
     if (flux <= 0.0) { return; }
     var rng = Rng(hash4(task, P.frame, 0x5e1u, 9u));
     let pk = bank_pick(bp, job.z, rnd(&rng), rnd(&rng));
-    let k = bank_kernel(pk.entry);
-    let n = k.size * k.size;
-    for (var i = tid; i < n; i += 256u) {
-        var prob = tables[k.base + i];
-        if (i > 0u) { prob -= tables[k.base + i - 1u]; }
-        if (prob <= 0.0) { continue; }
-        // Sub-pixel cells go to the pixel containing their centre.
-        let q = rotate2(pk.reference + bank_offset(k, i, 0.5, 0.5), pk.rot);
-        let fp = film_pixel(q.x, q.y);
-        if (fp >= 0) { film_add(u32(fp) * P.bins + job.z, flux * prob); }
+    let ks = bank_kernels(pk.entry);
+    for (var part = 0u; part < 2u; part++) {
+        var k = ks.core;
+        if (part == 1u) { k = ks.wing; }
+        let weight = select(ks.core_fraction, 1.0 - ks.core_fraction, part == 1u);
+        if (weight <= 0.0) { continue; }
+        let n = k.size * k.size;
+        for (var i = tid; i < n; i += 256u) {
+            var prob = tables[k.base + i];
+            if (i > 0u) { prob -= tables[k.base + i - 1u]; }
+            if (prob <= 0.0) { continue; }
+            // Cells go to the pixel containing their centre.
+            let q = rotate2(pk.reference + bank_offset(k, i, 0.5, 0.5), pk.rot);
+            let fp = film_pixel(q.x, q.y);
+            if (fp >= 0) { film_add(u32(fp) * P.bins + job.z, flux * weight * prob); }
+        }
     }
 }

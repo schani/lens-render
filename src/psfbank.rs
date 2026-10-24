@@ -26,9 +26,11 @@ pub struct PsfBank {
     pub bins: usize,
     /// Largest kernel half size in pixels (kernels cover (2·half + 1)² pixels).
     pub half: usize,
-    /// Per entry: kernel half size (pixels), cells per pixel along each axis,
-    /// and offset of its CDF in `cdf`.
-    pub layout: Vec<[u32; 3]>,
+    /// Per entry, two kernels: a core at sub-pixel resolution and a wing (the
+    /// tail outside the core square) at pixel resolution:
+    /// [core half (px), core cells per pixel, core CDF offset, wing half (px),
+    /// wing CDF offset, core energy fraction (f32 bits)].
+    pub layout: Vec<[u32; 6]>,
     pub pitch: f64,
     /// Per entry: chief-ray image radius (mm).
     pub refs: Vec<f32>,
@@ -83,36 +85,50 @@ impl PsfBank {
                 psf
             })
             .collect();
-        // Per entry: a kernel covering 99.9 % of the energy, with sub-pixel
-        // cells (so that binning into film pixels is the only pixel
-        // integration), up to ~100 cells per side.
+        // Per entry: a core holding 99 % of the energy at sub-pixel resolution
+        // (so that binning into film pixels is the only pixel integration),
+        // and a pixel-resolution wing out to 99.9 % for the diffraction tails.
         let mut refs = Vec::with_capacity(psfs.len());
         let mut cdf = Vec::new();
         let mut layout = Vec::with_capacity(psfs.len());
         let mut max_half = 1;
+        let mut push_cdf = |k: &[f64], cdf: &mut Vec<f32>| -> u32 {
+            let off = cdf.len() as u32;
+            let total: f64 = k.iter().sum();
+            let mut acc = 0.0;
+            cdf.extend(k.iter().map(|v| {
+                acc += v / total.max(1e-300);
+                acc as f32
+            }));
+            off
+        };
         for p in &psfs {
             let Some(p) = p else {
                 // Nothing passes: a delta at the reference (its weight is zero anyway).
                 refs.push(0.0);
-                layout.push([0, 1, cdf.len() as u32]);
-                cdf.push(1.0);
+                let off = push_cdf(&[1.0], &mut cdf);
+                layout.push([0, 1, off, 0, off, 1f32.to_bits()]);
                 continue;
             };
-            let r999 = energy_radius(&p.samples, 0.999);
-            let half = ((r999 / pitch).ceil() as usize + 1).min(64);
-            let sub = (100 / (2 * half + 1)).clamp(1, 16);
-            let size = (2 * half + 1) * sub;
-            max_half = max_half.max(half);
+            let hc = ((energy_radius(&p.samples, 0.99) / pitch).ceil() as usize + 1).min(24);
+            let hw = ((energy_radius(&p.samples, 0.999) / pitch).ceil() as usize + 1).clamp(hc, 64);
+            let sub = (128 / (2 * hc + 1)).clamp(1, 16);
+            max_half = max_half.max(hw);
             refs.push(p.reference[0].hypot(p.reference[1]) as f32);
-            layout.push([half as u32, sub as u32, cdf.len() as u32]);
-            let origin = [p.reference[0] - (half as f64 + 0.5) * pitch, p.reference[1] - (half as f64 + 0.5) * pitch];
-            let k = p.pixels(origin, pitch / sub as f64, size);
-            let total: f64 = k.iter().sum();
-            let mut acc = 0.0;
-            cdf.extend(k.iter().map(|v| {
-                acc += v / total.max(1e-30);
-                acc as f32
-            }));
+            let corner = |h: usize| [p.reference[0] - (h as f64 + 0.5) * pitch, p.reference[1] - (h as f64 + 0.5) * pitch];
+            let core = p.pixels(corner(hc), pitch / sub as f64, (2 * hc + 1) * sub);
+            let mut wing = p.pixels(corner(hw), pitch, 2 * hw + 1);
+            let size = 2 * hw + 1;
+            for j in hw - hc..=hw + hc {
+                for i in hw - hc..=hw + hc {
+                    wing[j * size + i] = 0.0;
+                }
+            }
+            let (ec, ew): (f64, f64) = (core.iter().sum(), wing.iter().sum());
+            let core_off = push_cdf(&core, &mut cdf);
+            let wing_off = if ew > 0.0 { push_cdf(&wing, &mut cdf) } else { core_off };
+            let fraction = if ew > 0.0 { ec / (ec + ew) } else { 1.0 };
+            layout.push([hc as u32, sub as u32, core_off, hw as u32, wing_off, (fraction as f32).to_bits()]);
         }
         PsfBank { n_theta, tan_max, n_verg, verg0: v_lo, dverg, n_az, period, bins, half: max_half, layout, pitch, refs, cdf, ep_z }
     }
