@@ -580,25 +580,35 @@ impl Lens {
     /// Traces a ray along a sequence of surface events. Returns the outgoing
     /// ray and its throughput (Fresnel transmission / reflection products).
     #[inline]
-    pub fn trace_path(&self, mut ray: Ray, l: f64, m: &Media, path: &[Event]) -> Option<(Ray, f64)> {
+    pub fn trace_path(&self, ray: Ray, l: f64, m: &Media, path: &[Event]) -> Option<(Ray, f64)> {
+        self.trace_path_opl(ray, l, m, path, true).map(|(r, t, _)| (r, t))
+    }
+
+    /// Like `trace_path`, also returning the optical path length from the
+    /// ray origin to the last surface. With `clip` false, apertures (element
+    /// rims, stop, iris) do not block rays.
+    #[inline]
+    pub fn trace_path_opl(&self, mut ray: Ray, l: f64, m: &Media, path: &[Event], clip: bool) -> Option<(Ray, f64, f64)> {
         let mut throughput = 1.0;
+        let mut opl = 0.0;
         for ev in path {
             let i = ev.surface as usize;
             let s = &self.surfaces[i];
             let (p, mut nrm) = self.intersect(i, &ray)?;
+            let (n1, n2) = if ev.forward { (m.n[i], m.n[i + 1]) } else { (m.n[i + 1], m.n[i]) };
+            opl += n1 * (p - ray.o).length();
             let (px, py) = (p.x - s.decenter.0, p.y - s.decenter.1);
             let r2 = px * px + py * py;
             if s.is_stop {
-                if !self.iris.contains(px, py) || r2 > s.semi_diameter * s.semi_diameter {
+                if clip && (!self.iris.contains(px, py) || r2 > s.semi_diameter * s.semi_diameter) {
                     return None;
                 }
                 ray.o = p;
                 continue;
             }
-            if r2 > s.semi_diameter * s.semi_diameter {
+            if clip && r2 > s.semi_diameter * s.semi_diameter {
                 return None;
             }
-            let (n1, n2) = if ev.forward { (m.n[i], m.n[i + 1]) } else { (m.n[i + 1], m.n[i]) };
             let mut cosi = -nrm.dot(ray.d);
             if cosi < 0.0 {
                 nrm = -nrm;
@@ -618,7 +628,7 @@ impl Lens {
                 ray = Ray { o: p, d: (ray.d * eta + nrm * (eta * cosi - k.sqrt())).normalize() };
             }
         }
-        Some((ray, throughput))
+        Some((ray, throughput, opl))
     }
 
     pub fn trace_forward(&self, ray: Ray, l: f64, m: &Media) -> Option<(Ray, f64)> {

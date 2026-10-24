@@ -5,6 +5,9 @@ mod glass;
 mod gpu;
 mod lens;
 mod math;
+mod mtf;
+mod plot;
+mod psf;
 mod render;
 mod scene;
 mod spectrum;
@@ -44,6 +47,23 @@ enum Cmd {
         #[arg(long = "set")]
         overrides: Vec<String>,
     },
+    /// Plot MTF curves (wave optics, white light) of a lens.
+    Mtf {
+        lens: String,
+        /// f-numbers to plot (wide open if empty).
+        #[arg(long, value_delimiter = ',')]
+        fstop: Vec<f64>,
+        /// Focus distance in m (infinity if absent).
+        #[arg(long)]
+        focus: Option<f64>,
+        /// Iris blades (0 = round).
+        #[arg(long, default_value_t = 0)]
+        blades: u32,
+        #[arg(long, default_value_t = 21.63)]
+        half_diag: f64,
+        #[arg(long, default_value = "mtf")]
+        out: String,
+    },
     /// Print optical analysis of a lens prescription and draw diagnostics.
     Analyze {
         lens: String,
@@ -66,6 +86,11 @@ fn main() -> Result<()> {
             lens.set_aperture(f, 0, 0.0, 0.0)?;
             lens.sensor_z = lens.best_focus(None)?;
             print!("{}", analysis::report(&lens, half_diag, out.as_deref())?);
+        }
+        Cmd::Mtf { lens, fstop, focus, blades, half_diag, out } => {
+            let lens = lens::Lens::load(&lens)?;
+            let fstops = if fstop.is_empty() { vec![lens.max_aperture()] } else { fstop };
+            print!("{}", mtf::run(&lens, &fstops, blades, focus.map(|f| f * 1000.0), half_diag, &out)?);
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
