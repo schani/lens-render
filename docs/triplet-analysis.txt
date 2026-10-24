@@ -42,4 +42,3 @@ Sensor plane z = 60.1571 mm (paraxial d focus 60.4054); max field 23.38°
   21.05   19.180    -0.351       +8.33       31.9   -0.3688   -0.1035    0.859       0.697
   23.38   21.585    -0.206      +15.85       64.2   -1.2608   +0.0304    0.760       0.579
 
-Wrote /var/folders/6d/rn5w1nj544z630lt73jzpdgc0000gn/T/tmp.lVVh6pGgCh/triplet-spots.png and /var/folders/6d/rn5w1nj544z630lt73jzpdgc0000gn/T/tmp.lVVh6pGgCh/triplet-layout.png

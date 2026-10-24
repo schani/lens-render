@@ -21,6 +21,37 @@ The first lens is a 50 mm f/3.5 Cooke triplet (`lenses/cooke-triplet.lens`).
 | Focus breathing | Unit focusing; best focus found like contrast AF (minimum RMS blur) |
 | Manufacturing errors | Optional lateral decentering of individual elements (one-sided softness) |
 
+## Gallery
+
+Rendered with `scripts/gallery.sh`.
+
+Test chart at 2 m, f/3.5: sharp centre; astigmatism, lateral colour and
+vignetting towards the corners.
+![chart](docs/chart.jpg)
+
+Night, focused at 1.5 m, f/3.5: cat's-eye bokeh, colour-fringed bokeh rims,
+diffraction glow and a faint ghost arc from the street lamp.
+![night](docs/night.jpg)
+
+Point lights behind and in front of the focus plane at f/3.5 and f/8:
+bright green-rimmed discs behind focus, softer purple-rimmed ones in front
+(spherical aberration plus longitudinal colour), cat's eyes in the corners
+wide open, hexagons stopped down.
+![bokeh f/3.5](docs/bokeh-f3.5.jpg)
+![bokeh f/8](docs/bokeh-f8.jpg)
+
+A bright light through the uncoated lens at f/8: iris-shaped ghosts, a
+caustic ghost and the six-pointed diffraction star.
+![flare](docs/flare.jpg)
+
+Sun just outside the frame, single-coated vs. uncoated:
+![garden coated](docs/garden-coated.jpg)
+![garden uncoated](docs/garden-uncoated.jpg)
+
+Layout and spot diagrams (0–23.4° field, 200 µm boxes):
+![layout](docs/triplet-layout.png)
+![spots](docs/triplet-spots.png)
+
 ## Usage
 
 ```sh
