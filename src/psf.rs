@@ -188,23 +188,34 @@ fn trace_to_sphere(lens: &Lens, src: &Source, q: Vec3, l: f64, m: &Media, rf: &R
     Some(PupilRay { t, opl: opl0 + opl + n_img * s, dir: out.d, hit: [hit.x - rf.centre.x, hit.y - rf.centre.y] })
 }
 
-impl Wavefront {
-    /// Wavefront for `src` at wavelength `l` (nm) on an n × n pupil grid; `n`
-    /// None chooses it from the geometric spot size (Nyquist for the
-    /// wavefront slope, between 64 and `max_n`).
-    pub fn compute(lens: &Lens, src: &Source, l: f64, n: Option<usize>, max_n: usize) -> Option<Wavefront> {
+/// Chief-ray aim point on the entrance-pupil plane, and the reference
+/// sphere: centred on the chief ray's sensor point, through the exit pupil.
+fn chief(lens: &Lens, src: &Source, l: f64, m: &Media) -> Option<(Vec3, Reference)> {
+    let par = lens.paraxial_data(LAMBDA_D);
+    let q_c = aim_chief(lens, src, l, m, par.entrance_pupil_z)?;
+    let (ray, _) = src.ray_through(q_c);
+    let (out, _, _) = lens.trace_path_opl(ray, l, m, &lens.forward_path, false)?;
+    let centre = out.o + out.d * ((lens.sensor_z - out.o.z) / out.d.z);
+    let pupil = out.o + out.d * ((par.exit_pupil_z - out.o.z) / out.d.z);
+    Some((q_c, Reference { centre, pupil, radius: (centre - pupil).length() }))
+}
+
+/// Square on the entrance-pupil plane holding the rays that pass, with a
+/// margin, and the geometric spot radius. It barely depends on wavelength,
+/// so one frame serves all wavelengths of a source.
+#[derive(Clone, Copy)]
+pub struct PupilFrame {
+    cx: f64,
+    cy: f64,
+    side: f64,
+    extent: f64,
+}
+
+impl PupilFrame {
+    pub fn find(lens: &Lens, src: &Source, l: f64) -> Option<PupilFrame> {
         let m = lens.media(l);
         let par = lens.paraxial_data(LAMBDA_D);
-        let q_c = aim_chief(lens, src, l, &m, par.entrance_pupil_z)?;
-        // Chief ray: reference point on the sensor and exit-pupil point.
-        let (ray, _) = src.ray_through(q_c);
-        let (out, _, _) = lens.trace_path_opl(ray, l, &m, &lens.forward_path, false)?;
-        let centre = out.o + out.d * ((lens.sensor_z - out.o.z) / out.d.z);
-        let pupil = out.o + out.d * ((par.exit_pupil_z - out.o.z) / out.d.z);
-        let rf = Reference { centre, pupil, radius: (centre - pupil).length() };
-        let chief = trace_to_sphere(lens, src, q_c, l, &m, &rf, false)?;
-
-        // Part of the entrance-pupil plane whose rays pass.
+        let (q_c, rf) = chief(lens, src, l, &m)?;
         let half = 2.5 * lens.iris.max_radius / par.entrance_pupil_mag + 1.0;
         let g = 96;
         let cell = 2.0 * half / g as f64;
@@ -224,7 +235,37 @@ impl Wavefront {
             return None;
         }
         let side = (bb[2] - bb[0]).max(bb[3] - bb[1]) + 2.0 * cell;
-        let (cx, cy) = (0.5 * (bb[0] + bb[2]), 0.5 * (bb[1] + bb[3]));
+        Some(PupilFrame { cx: 0.5 * (bb[0] + bb[2]), cy: 0.5 * (bb[1] + bb[3]), side, extent })
+    }
+}
+
+impl Wavefront {
+    /// Wavefront for `src` at wavelength `l` (nm) on an n × n pupil grid; `n`
+    /// None chooses it from the geometric spot size (Nyquist for the
+    /// wavefront slope, between 64 and `max_n`).
+    pub fn compute(lens: &Lens, src: &Source, l: f64, n: Option<usize>, max_n: usize) -> Option<Wavefront> {
+        Self::compute_sampled(lens, src, l, n, max_n, None, true)
+    }
+
+    /// `compute` within a pupil frame found at another wavelength.
+    pub fn compute_in(lens: &Lens, src: &Source, l: f64, max_n: usize, frame: &PupilFrame) -> Option<Wavefront> {
+        Self::compute_sampled(lens, src, l, None, max_n, Some(frame), true)
+    }
+
+    /// `compute`, optionally tracing every pupil sample instead of interpolating.
+    fn compute_sampled(lens: &Lens, src: &Source, l: f64, n: Option<usize>, max_n: usize, frame: Option<&PupilFrame>, interpolate: bool) -> Option<Wavefront> {
+        let m = lens.media(l);
+        let (q_c, rf) = chief(lens, src, l, &m)?;
+        let chief = trace_to_sphere(lens, src, q_c, l, &m, &rf, false)?;
+        let own;
+        let frame = match frame {
+            Some(f) => f,
+            None => {
+                own = PupilFrame::find(lens, src, l)?;
+                &own
+            }
+        };
+        let PupilFrame { cx, cy, side, extent } = *frame;
         let sample_grid = |n: usize| -> Vec<Option<PupilRay>> {
             let du = side / n as f64;
             (0..n * n)
@@ -241,6 +282,7 @@ impl Wavefront {
                 // Pupil width in direction cosines, from a coarse grid.
                 let coarse = sample_grid(16);
                 let dirs: Vec<Vec3> = coarse.iter().flatten().map(|r| r.dir).collect();
+                let extent = coarse.iter().flatten().map(|r| r.hit[0].hypot(r.hit[1])).fold(extent, f64::max);
                 let span = |f: fn(&Vec3) -> f64| dirs.iter().map(f).fold(f64::NEG_INFINITY, f64::max) - dirs.iter().map(f).fold(f64::INFINITY, f64::min);
                 let width = span(|d| d.x).max(span(|d| d.y)).max(1e-6) * 16.0 / 15.0;
                 // The PSF window n·λ/width must hold the spot with margin.
@@ -248,27 +290,76 @@ impl Wavefront {
                 (need.ceil() as usize).next_power_of_two().clamp(64, max_n)
             }
         };
-        let rays = sample_grid(n);
         let du = side / n as f64;
+        let trace = |i: f64, j: f64| {
+            let q = Vec3::new(cx - side / 2.0 + (i + 0.5) * du, cy - side / 2.0 + (j + 0.5) * du, q_c.z);
+            trace_to_sphere(lens, src, q, l, &m, &rf, true)
+        };
+        // Rays are traced every `step` samples (plus a border node for the
+        // stencil). The wavefront is smooth, so samples whose whole 4 × 4
+        // stencil passes are interpolated bicubically; only samples near the
+        // pupil edge are traced. The open pupil is convex and large compared
+        // with a stencil, so a sample inside a passing stencil passes and one
+        // inside a blocked stencil is blocked.
+        let step = if interpolate { (n / 64).clamp(1, 8) } else { 1 };
+        let nc = n / step + 3;
+        let coarse: Vec<Option<PupilRay>> = (0..nc * nc)
+            .into_par_iter()
+            .map(|k| trace(((k % nc) as f64 - 1.0) * step as f64, ((k / nc) as f64 - 1.0) * step as f64))
+            .collect();
+        let node = |ci: usize, cj: usize| coarse[(cj + 1) * nc + ci + 1].as_ref();
+        let sample = |r: &PupilRay| (r.t.sqrt(), r.opl - chief.opl);
+        let samples: Vec<Option<(f64, f64)>> = (0..n * n)
+            .into_par_iter()
+            .map(|k| {
+                let (i, j) = (k % n, k / n);
+                let (ci, cj) = (i / step, j / step);
+                if i % step == 0 && j % step == 0 {
+                    return node(ci, cj).map(sample);
+                }
+                let mut amp = [[0.0; 4]; 4];
+                let mut opd = [[0.0; 4]; 4];
+                let mut open = 0;
+                for (dj, (ar, or)) in amp.iter_mut().zip(opd.iter_mut()).enumerate() {
+                    for di in 0..4 {
+                        if let Some(r) = coarse[(cj + dj) * nc + ci + di].as_ref() {
+                            (ar[di], or[di]) = sample(r);
+                            open += 1;
+                        }
+                    }
+                }
+                match open {
+                    0 => return None,
+                    16 => {}
+                    _ => return trace(i as f64, j as f64).as_ref().map(sample),
+                }
+                let (fx, fy) = ((i % step) as f64 / step as f64, (j % step) as f64 / step as f64);
+                Some((bicubic(&amp, fx, fy), bicubic(&opd, fx, fy)))
+            })
+            .collect();
         // Least-squares affine fit of exit direction cosines over the pupil.
         let (mut s, mut su, mut sv, mut suu, mut suv, mut svv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let (mut sl, mut sm, mut slu, mut slv, mut smu, mut smv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        for (k, r) in rays.iter().enumerate() {
-            if let Some(r) = r {
-                let u = ((k % n) as f64 + 0.5) * du - side / 2.0;
-                let v = ((k / n) as f64 + 0.5) * du - side / 2.0;
-                s += 1.0;
-                su += u;
-                sv += v;
-                suu += u * u;
-                suv += u * v;
-                svv += v * v;
-                sl += r.dir.x;
-                sm += r.dir.y;
-                slu += r.dir.x * u;
-                slv += r.dir.x * v;
-                smu += r.dir.y * u;
-                smv += r.dir.y * v;
+        let mut spot = Vec::new();
+        for cj in 0..n / step {
+            for ci in 0..n / step {
+                if let Some(r) = node(ci, cj) {
+                    let u = ((ci * step) as f64 + 0.5) * du - side / 2.0;
+                    let v = ((cj * step) as f64 + 0.5) * du - side / 2.0;
+                    spot.push(r.hit);
+                    s += 1.0;
+                    su += u;
+                    sv += v;
+                    suu += u * u;
+                    suv += u * v;
+                    svv += v * v;
+                    sl += r.dir.x;
+                    sm += r.dir.y;
+                    slu += r.dir.x * u;
+                    slv += r.dir.x * v;
+                    smu += r.dir.y * u;
+                    smv += r.dir.y * v;
+                }
             }
         }
         // Solve the 3×3 normal equations for (c0, a_u, a_v) for L and for M.
@@ -292,16 +383,14 @@ impl Wavefront {
         };
         let fl = solve(sl, slu, slv);
         let fm = solve(sm, smu, smv);
-        let samples = rays.iter().map(|r| r.as_ref().map(|r| (r.t.sqrt(), r.opl - chief.opl))).collect();
-        let power = rays.iter().flatten().map(|r| r.t).sum::<f64>() * du * du;
-        let spot = rays.iter().flatten().map(|r| r.hit).collect();
+        let power = samples.iter().flatten().map(|(a, _)| a * a).sum::<f64>() * du * du;
         Some(Wavefront {
             lambda: l,
             n,
             du,
             samples,
             a: [[fl[1], fl[2]], [fm[1], fm[2]]],
-            reference: [centre.x, centre.y],
+            reference: [rf.centre.x, rf.centre.y],
             power,
             spot,
         })
@@ -329,43 +418,20 @@ pub struct Psf {
 impl Psf {
     /// Fraunhofer diffraction of the wavefront: zero-padded FFT of the pupil function.
     pub fn from_wavefront(wf: &Wavefront, pad: usize) -> Psf {
-        let n = wf.n;
-        let nn = n * pad;
-        let k = 2.0 * std::f64::consts::PI / (wf.lambda * 1e-6);
-        let mut buf = vec![Complex::new(0.0, 0.0); nn * nn];
-        for (idx, s) in wf.samples.iter().enumerate() {
-            if let Some((a, opd)) = s {
-                buf[(idx / n) * nn + idx % n] = Complex::from_polar(*a, k * opd);
+        let g = PsfGrid::from_wavefront(wf, pad);
+        let peak = g.e.iter().fold(0f32, |a, &b| a.max(b));
+        let mut samples = Vec::new();
+        g.for_each(|dx, dy, e| {
+            if e >= peak * 1e-12 {
+                samples.push([dx, dy, e as f64]);
             }
-        }
-        fft2(&mut buf, nn);
-        let total: f64 = buf.iter().map(|c| c.norm_sqr()).sum();
-        // Δ = −λ/(N du) · A^{-T} (kx, ky)
-        let a = wf.a;
-        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
-        let inv_t = [[a[1][1] / det, -a[1][0] / det], [-a[0][1] / det, a[0][0] / det]];
-        let scale = -(wf.lambda * 1e-6) / (nn as f64 * wf.du);
-        let peak = buf.iter().map(|c| c.norm_sqr()).fold(0.0, f64::max);
-        let samples = buf
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                let e = c.norm_sqr();
-                if e < peak * 1e-12 {
-                    return None;
-                }
-                let kx = signed(i % nn, nn);
-                let ky = signed(i / nn, nn);
-                let dx = scale * (inv_t[0][0] * kx + inv_t[0][1] * ky);
-                let dy = scale * (inv_t[1][0] * kx + inv_t[1][1] * ky);
-                Some([dx, dy, e / total])
-            })
-            .collect();
+        });
         Psf { lambda: wf.lambda, reference: wf.reference, power: wf.power, samples }
     }
 
     /// Integrates the PSF over sensor pixels: a `size` × `size` grid whose
     /// pixel (0, 0) covers [origin, origin + pitch) in sensor coordinates.
+    #[cfg(test)]
     pub fn pixels(&self, origin: [f64; 2], pitch: f64, size: usize) -> Vec<f64> {
         let mut out = vec![0.0; size * size];
         for s in &self.samples {
@@ -386,26 +452,121 @@ impl Psf {
     }
 }
 
+/// A PSF as the intensity grid of the zero-padded FFT: sample (i, j) lies at
+/// `map · (kx, ky)` from the reference point, (kx, ky) the signed frequency
+/// indices.
+pub struct PsfGrid {
+    pub reference: [f64; 2],
+    nn: usize,
+    map: [[f64; 2]; 2],
+    /// Row-major nn × nn, normalised to unit sum.
+    e: Vec<f32>,
+}
+
+impl PsfGrid {
+    pub fn from_wavefront(wf: &Wavefront, pad: usize) -> PsfGrid {
+        let n = wf.n;
+        let nn = n * pad;
+        let k = 2.0 * std::f64::consts::PI / (wf.lambda * 1e-6);
+        let mut buf = vec![Complex::new(0f32, 0.0); nn * nn];
+        for (idx, s) in wf.samples.iter().enumerate() {
+            if let Some((a, opd)) = s {
+                let (sin, cos) = (k * opd).sin_cos();
+                buf[(idx / n) * nn + idx % n] = Complex::new((a * cos) as f32, (a * sin) as f32);
+            }
+        }
+        fft2(&mut buf, nn, n);
+        let e: Vec<f32> = buf.iter().map(|c| c.norm_sqr()).collect();
+        let total: f64 = e.iter().map(|&v| v as f64).sum();
+        let e = e.into_iter().map(|v| (v as f64 / total) as f32).collect();
+        // Δ = −λ/(N du) · A^{-T} (kx, ky)
+        let a = wf.a;
+        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+        let scale = -(wf.lambda * 1e-6) / (nn as f64 * wf.du);
+        let map = [[scale * a[1][1] / det, -scale * a[1][0] / det], [-scale * a[0][1] / det, scale * a[0][0] / det]];
+        PsfGrid { reference: wf.reference, nn, map, e }
+    }
+
+    /// Calls `f(dx, dy, energy)` for every sample.
+    fn for_each(&self, mut f: impl FnMut(f64, f64, f32)) {
+        let nn = self.nn;
+        for (j, row) in self.e.chunks(nn).enumerate() {
+            let ky = signed(j, nn);
+            for (i, &e) in row.iter().enumerate() {
+                let kx = signed(i, nn);
+                f(self.map[0][0] * kx + self.map[0][1] * ky, self.map[1][0] * kx + self.map[1][1] * ky, e);
+            }
+        }
+    }
+
+    /// Radii (mm) containing the given fractions of the energy (radial histogram).
+    pub fn energy_radii<const N: usize>(&self, fractions: [f64; N]) -> [f64; N] {
+        let h = self.nn as f64 / 2.0;
+        let r_max = [[h, h], [h, -h]].iter().map(|[x, y]| (self.map[0][0] * x + self.map[0][1] * y).hypot(self.map[1][0] * x + self.map[1][1] * y)).fold(0.0, f64::max);
+        let bins = 4096;
+        let mut hist = vec![0.0; bins];
+        let to_bin = bins as f64 / r_max;
+        self.for_each(|dx, dy, e| hist[(((dx * dx + dy * dy).sqrt() * to_bin) as usize).min(bins - 1)] += e as f64);
+        let total: f64 = hist.iter().sum();
+        fractions.map(|fraction| {
+            let mut acc = 0.0;
+            for (k, e) in hist.iter().enumerate() {
+                acc += e;
+                if acc >= fraction * total {
+                    return (k + 1) as f64 / to_bin;
+                }
+            }
+            r_max
+        })
+    }
+
+    /// Integrates over sensor pixels: a `size` × `size` grid whose pixel
+    /// (0, 0) covers [origin, origin + pitch) in sensor coordinates.
+    pub fn pixels(&self, origin: [f64; 2], pitch: f64, size: usize) -> Vec<f64> {
+        let mut out = vec![0.0; size * size];
+        let (ox, oy) = ((self.reference[0] - origin[0]) / pitch, (self.reference[1] - origin[1]) / pitch);
+        self.for_each(|dx, dy, e| {
+            let (x, y) = ((ox + dx / pitch).floor(), (oy + dy / pitch).floor());
+            if x >= 0.0 && y >= 0.0 && (x as usize) < size && (y as usize) < size {
+                out[y as usize * size + x as usize] += e as f64;
+            }
+        });
+        out
+    }
+}
+
+/// Catmull-Rom bicubic interpolation inside the centre cell of a 4 × 4 stencil.
+fn bicubic(p: &[[f64; 4]; 4], fx: f64, fy: f64) -> f64 {
+    let cr = |a: f64, b: f64, c: f64, d: f64, t: f64| b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
+    let r = p.map(|row| cr(row[0], row[1], row[2], row[3], fx));
+    cr(r[0], r[1], r[2], r[3], fy)
+}
+
 fn signed(i: usize, n: usize) -> f64 {
     if i < n / 2 { i as f64 } else { i as f64 - n as f64 }
 }
 
-fn fft2(buf: &mut [Complex<f64>], n: usize) {
-    let mut planner = FftPlanner::new();
-    let f = planner.plan_fft_forward(n);
-    buf.par_chunks_mut(n).for_each(|row| f.process(row));
+/// In-place 2-D FFT of an n × n grid whose rows from `rows` on are zero.
+fn fft2(buf: &mut [Complex<f32>], n: usize, rows: usize) {
+    thread_local!(static PLANNER: std::cell::RefCell<FftPlanner<f32>> = std::cell::RefCell::new(FftPlanner::new()));
+    let f = PLANNER.with(|p| p.borrow_mut().plan_fft_forward(n));
+    buf[..rows * n].par_chunks_mut(n).for_each(|row| f.process(row));
+    // In 16-row blocks: each block of destination rows reads 16-wide strips of the source.
+    let b = 16.min(n);
+    let transpose = |src: &[Complex<f32>], dst: &mut [Complex<f32>]| {
+        dst.par_chunks_mut(b * n).enumerate().for_each(|(bi, block)| {
+            for j in 0..n {
+                let row = &src[j * n + bi * b..j * n + bi * b + b];
+                for (k, &c) in row.iter().enumerate() {
+                    block[k * n + j] = c;
+                }
+            }
+        })
+    };
     let mut t = vec![Complex::new(0.0, 0.0); n * n];
-    for j in 0..n {
-        for i in 0..n {
-            t[i * n + j] = buf[j * n + i];
-        }
-    }
+    transpose(buf, &mut t);
     t.par_chunks_mut(n).for_each(|col| f.process(col));
-    for j in 0..n {
-        for i in 0..n {
-            buf[j * n + i] = t[i * n + j];
-        }
-    }
+    transpose(&t, buf);
 }
 
 /// Polychromatic PSF: per-wavelength PSFs combined with spectral weights,
@@ -489,6 +650,38 @@ mod tests {
             let m = poly.mtf(&[f], [1.0, 0.0])[0];
             let ideal = diffraction_limit_mtf(f, 550.0, n_w);
             assert!(m <= ideal + 0.01 && m > ideal - 0.06, "{f} lp/mm: {m} vs ideal {ideal}");
+        }
+    }
+
+    /// Interpolating the wavefront between traced rays gives the same PSF as
+    /// tracing every pupil sample: in focus, defocused, vignetted, aspheric,
+    /// polygonal iris.
+    #[test]
+    fn interpolated_wavefront_matches_traced() {
+        let mut lux = Lens::parse(include_str!("../lenses/summilux-50-asph.lens")).unwrap();
+        lux.set_aperture(1.4, 0, 0.0, 0.0).unwrap();
+        lux.sensor_z = lux.best_focus(None).unwrap();
+        let mut poly = triplet(8.0);
+        poly.set_aperture(8.0, 6, 0.0, 0.0).unwrap();
+        let cases = [
+            (triplet(3.5), 0.0, None, 550.0),
+            (triplet(3.5), 14.0, Some(1500.0), 450.0),
+            (poly, 10.0, Some(700.0), 650.0),
+            (lux.clone(), 0.0, Some(2000.0), 550.0),
+            (lux, 20.0, None, 430.0),
+        ];
+        for (lens, deg, dist, l) in cases {
+            let src = Source::at_field(&lens, f64::to_radians(deg), dist);
+            let a = Wavefront::compute_sampled(&lens, &src, l, None, 1024, None, true).unwrap();
+            let b = Wavefront::compute_sampled(&lens, &src, l, None, 1024, None, false).unwrap();
+            let (pa, pb) = (Psf::from_wavefront(&a, 2), Psf::from_wavefront(&b, 2));
+            let pitch = 0.003;
+            let size = 201;
+            let origin = [pb.reference[0] - pitch * size as f64 / 2.0, pb.reference[1] - pitch * size as f64 / 2.0];
+            let (ka, kb) = (pa.pixels(origin, pitch, size), pb.pixels(origin, pitch, size));
+            let l1: f64 = ka.iter().zip(&kb).map(|(x, y)| (x - y).abs()).sum::<f64>() / kb.iter().sum::<f64>();
+            println!("{deg}° {dist:?} {l} nm, n {}: L1 {l1:.5}, power {:.5}", a.n, a.power / b.power);
+            assert!(l1 < 0.01 && (a.power / b.power - 1.0).abs() < 0.002, "L1 {l1}");
         }
     }
 

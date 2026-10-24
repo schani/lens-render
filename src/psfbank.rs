@@ -8,7 +8,7 @@
 
 use crate::glass::LAMBDA_D;
 use crate::lens::Lens;
-use crate::psf::{Psf, Source, Wavefront};
+use crate::psf::{PsfGrid, PupilFrame, Source, Wavefront};
 use crate::spectrum::{LAMBDA_MIN, LAMBDA_RANGE};
 use rayon::prelude::*;
 
@@ -58,33 +58,41 @@ impl PsfBank {
         let n_theta = 16;
         let tan_max = 1.05 * half_diag / (f * (1.0 + f * vf));
         let (n_az, period) = if lens.iris.circular { (1, std::f64::consts::TAU) } else { (4, std::f64::consts::TAU / lens.iris.blades as f64) };
-        let entries: Vec<(usize, usize, usize, usize)> = (0..n_theta)
-            .flat_map(|t| (0..n_verg).flat_map(move |v| (0..n_az).flat_map(move |a| (0..bins).map(move |b| (t, v, a, b)))))
-            .collect();
+        let sources: Vec<(usize, usize, usize)> = (0..n_theta).flat_map(|t| (0..n_verg).flat_map(move |v| (0..n_az).map(move |a| (t, v, a)))).collect();
+        let total = sources.len() * bins;
         let done = std::sync::atomic::AtomicUsize::new(0);
-        let psfs: Vec<Option<Psf>> = entries
+        // Per entry: a core holding 99 % of the energy at sub-pixel resolution
+        // (so that binning into film pixels is the only pixel integration),
+        // and a pixel-resolution wing out to 99.9 % for the diffraction tails.
+        let kernels: Vec<Option<Kernels>> = sources
             .par_iter()
-            .map(|&(t, v, a, b)| {
+            .flat_map(|&(t, v, a)| {
                 let theta = (tan_max * t as f64 / (n_theta - 1) as f64).atan();
                 let verg = v_lo + dverg * v as f64;
                 let distance = if verg <= 0.0 { None } else { Some(1.0 / verg - ep_z) };
                 let alpha = std::f64::consts::FRAC_PI_2 + period * a as f64 / n_az as f64;
-                let l = LAMBDA_MIN + LAMBDA_RANGE * (b as f64 + 0.5) / bins as f64;
                 let src = Source::at(lens, theta, alpha, distance);
-                let psf = Wavefront::compute(lens, &src, l, None, 1024).map(|wf| Psf::from_wavefront(&wf, 2));
-                let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if n % 64 == 0 {
-                    progress(n as f64 / entries.len() as f64);
-                }
-                psf
+                let frame = PupilFrame::find(lens, &src, LAMBDA_D);
+                (0..bins)
+                    .into_par_iter()
+                    .map(|b| {
+                        let l = LAMBDA_MIN + LAMBDA_RANGE * (b as f64 + 0.5) / bins as f64;
+                        let k = frame
+                            .as_ref()
+                            .and_then(|f| Wavefront::compute_in(lens, &src, l, 1024, f))
+                            .map(|wf| Kernels::new(&PsfGrid::from_wavefront(&wf, 2), pitch));
+                        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        if n % 64 == 0 {
+                            progress(n as f64 / total as f64);
+                        }
+                        k
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
-        // Per entry: a core holding 99 % of the energy at sub-pixel resolution
-        // (so that binning into film pixels is the only pixel integration),
-        // and a pixel-resolution wing out to 99.9 % for the diffraction tails.
-        let mut refs = Vec::with_capacity(psfs.len());
+        let mut refs = Vec::with_capacity(kernels.len());
         let mut cdf = Vec::new();
-        let mut layout = Vec::with_capacity(psfs.len());
+        let mut layout = Vec::with_capacity(kernels.len());
         let mut max_half = 1;
         let push_cdf = |k: &[f64], cdf: &mut Vec<f32>| -> u32 {
             let off = cdf.len() as u32;
@@ -96,57 +104,51 @@ impl PsfBank {
             }));
             off
         };
-        for p in &psfs {
-            let Some(p) = p else {
+        for k in &kernels {
+            let Some(k) = k else {
                 // Nothing passes: a delta at the reference (its weight is zero anyway).
                 refs.push(0.0);
                 let off = push_cdf(&[1.0], &mut cdf);
                 layout.push([0, 1, off, 0, off, 1f32.to_bits()]);
                 continue;
             };
-            let hc = ((energy_radius(&p.samples, 0.99) / pitch).ceil() as usize + 1).min(24);
-            let hw = ((energy_radius(&p.samples, 0.999) / pitch).ceil() as usize + 1).clamp(hc, 64);
-            let sub = (128 / (2 * hc + 1)).clamp(1, 16);
-            max_half = max_half.max(hw);
-            refs.push(p.reference[0].hypot(p.reference[1]) as f32);
-            let corner = |h: usize| [p.reference[0] - (h as f64 + 0.5) * pitch, p.reference[1] - (h as f64 + 0.5) * pitch];
-            let core = p.pixels(corner(hc), pitch / sub as f64, (2 * hc + 1) * sub);
-            let mut wing = p.pixels(corner(hw), pitch, 2 * hw + 1);
-            let size = 2 * hw + 1;
-            for j in hw - hc..=hw + hc {
-                for i in hw - hc..=hw + hc {
-                    wing[j * size + i] = 0.0;
-                }
-            }
-            let (ec, ew): (f64, f64) = (core.iter().sum(), wing.iter().sum());
-            let core_off = push_cdf(&core, &mut cdf);
-            let wing_off = if ew > 0.0 { push_cdf(&wing, &mut cdf) } else { core_off };
+            max_half = max_half.max(k.hw);
+            refs.push(k.reference);
+            let (ec, ew): (f64, f64) = (k.core.iter().sum(), k.wing.iter().sum());
+            let core_off = push_cdf(&k.core, &mut cdf);
+            let wing_off = if ew > 0.0 { push_cdf(&k.wing, &mut cdf) } else { core_off };
             let fraction = if ew > 0.0 { ec / (ec + ew) } else { 1.0 };
-            layout.push([hc as u32, sub as u32, core_off, hw as u32, wing_off, (fraction as f32).to_bits()]);
+            layout.push([k.hc as u32, k.sub as u32, core_off, k.hw as u32, wing_off, (fraction as f32).to_bits()]);
         }
         PsfBank { n_theta, tan_max, n_verg, verg0: v_lo, dverg, n_az, period, bins, half: max_half, layout, pitch, refs, cdf }
     }
 }
 
-/// Radius (mm) containing `fraction` of the PSF's energy (radial histogram).
-fn energy_radius(samples: &[[f64; 3]], fraction: f64) -> f64 {
-    let r_max = samples.iter().map(|s| s[0].hypot(s[1])).fold(0.0, f64::max);
-    if r_max == 0.0 {
-        return 0.0;
-    }
-    let n = 4096;
-    let mut hist = vec![0.0; n];
-    for s in samples {
-        let k = ((s[0].hypot(s[1]) / r_max * n as f64) as usize).min(n - 1);
-        hist[k] += s[2];
-    }
-    let total: f64 = hist.iter().sum();
-    let mut acc = 0.0;
-    for (k, e) in hist.iter().enumerate() {
-        acc += e;
-        if acc >= fraction * total {
-            return (k + 1) as f64 / n as f64 * r_max;
+/// One entry's kernels, before packing into the bank.
+struct Kernels {
+    reference: f32,
+    hc: usize,
+    sub: usize,
+    hw: usize,
+    core: Vec<f64>,
+    wing: Vec<f64>,
+}
+
+impl Kernels {
+    fn new(p: &PsfGrid, pitch: f64) -> Kernels {
+        let [r99, r999] = p.energy_radii([0.99, 0.999]);
+        let hc = ((r99 / pitch).ceil() as usize + 1).min(24);
+        let hw = ((r999 / pitch).ceil() as usize + 1).clamp(hc, 64);
+        let sub = (128 / (2 * hc + 1)).clamp(1, 16);
+        let corner = |h: usize| [p.reference[0] - (h as f64 + 0.5) * pitch, p.reference[1] - (h as f64 + 0.5) * pitch];
+        let core = p.pixels(corner(hc), pitch / sub as f64, (2 * hc + 1) * sub);
+        let mut wing = p.pixels(corner(hw), pitch, 2 * hw + 1);
+        let size = 2 * hw + 1;
+        for j in hw - hc..=hw + hc {
+            for i in hw - hc..=hw + hc {
+                wing[j * size + i] = 0.0;
+            }
         }
+        Kernels { reference: p.reference[0].hypot(p.reference[1]) as f32, hc, sub, hw, core, wing }
     }
-    r_max
 }
