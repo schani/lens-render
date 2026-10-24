@@ -239,6 +239,180 @@ impl PupilFrame {
     }
 }
 
+/// Chief ray, reference sphere, pupil frame and grid size of a wavefront.
+struct Setup {
+    m: Media,
+    q_c: Vec3,
+    rf: Reference,
+    chief: PupilRay,
+    cx: f64,
+    cy: f64,
+    side: f64,
+    n: usize,
+}
+
+impl Setup {
+    fn new(lens: &Lens, src: &Source, l: f64, n: Option<usize>, max_n: usize, frame: Option<&PupilFrame>) -> Option<Setup> {
+        let m = lens.media(l);
+        let (q_c, rf) = chief(lens, src, l, &m)?;
+        let chief = trace_to_sphere(lens, src, q_c, l, &m, &rf, false)?;
+        let own;
+        let frame = match frame {
+            Some(f) => f,
+            None => {
+                own = PupilFrame::find(lens, src, l)?;
+                &own
+            }
+        };
+        let PupilFrame { cx, cy, side, extent } = *frame;
+        let n = match n {
+            Some(n) => n,
+            None => {
+                // Pupil width in direction cosines, from a coarse grid.
+                let du = side / 16.0;
+                let coarse: Vec<PupilRay> = (0..256)
+                    .filter_map(|k| {
+                        let q = Vec3::new(cx - side / 2.0 + ((k % 16) as f64 + 0.5) * du, cy - side / 2.0 + ((k / 16) as f64 + 0.5) * du, q_c.z);
+                        trace_to_sphere(lens, src, q, l, &m, &rf, true)
+                    })
+                    .collect();
+                let extent = coarse.iter().map(|r| r.hit[0].hypot(r.hit[1])).fold(extent, f64::max);
+                let span = |f: fn(&Vec3) -> f64| coarse.iter().map(|r| f(&r.dir)).fold(f64::NEG_INFINITY, f64::max) - coarse.iter().map(|r| f(&r.dir)).fold(f64::INFINITY, f64::min);
+                let width = span(|d| d.x).max(span(|d| d.y)).max(1e-6) * 16.0 / 15.0;
+                // The PSF window n·λ/width must hold the spot with margin.
+                let need = 3.0 * (extent + 2.0 * l * 1e-6 / width) * width / (l * 1e-6);
+                (need.ceil() as usize).next_power_of_two().clamp(64, max_n)
+            }
+        };
+        Some(Setup { m, q_c, rf, chief, cx, cy, side, n })
+    }
+}
+
+/// Linear part of the least-squares affine fit of exit direction cosines
+/// (L, M) over pupil points (u, v).
+fn affine_fit(rays: impl Iterator<Item = (f64, f64, Vec3)>) -> [[f64; 2]; 2] {
+    let (mut s, mut su, mut sv, mut suu, mut suv, mut svv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut sl, mut sm, mut slu, mut slv, mut smu, mut smv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (u, v, dir) in rays {
+        s += 1.0;
+        su += u;
+        sv += v;
+        suu += u * u;
+        suv += u * v;
+        svv += v * v;
+        sl += dir.x;
+        sm += dir.y;
+        slu += dir.x * u;
+        slv += dir.x * v;
+        smu += dir.y * u;
+        smv += dir.y * v;
+    }
+    // Solve the 3×3 normal equations for (c0, a_u, a_v) for L and for M.
+    let solve = |b0: f64, bu: f64, bv: f64| -> [f64; 3] {
+        let mat = [[s, su, sv], [su, suu, suv], [sv, suv, svv]];
+        let det = |m: [[f64; 3]; 3]| {
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        };
+        let d = det(mat);
+        let rhs = [b0, bu, bv];
+        let mut x = [0.0; 3];
+        for c in 0..3 {
+            let mut mc = mat;
+            for r in 0..3 {
+                mc[r][c] = rhs[r];
+            }
+            x[c] = det(mc) / d;
+        }
+        x
+    };
+    let fl = solve(sl, slu, slv);
+    let fm = solve(sm, smu, smv);
+    [[fl[1], fl[2]], [fm[1], fm[2]]]
+}
+
+/// Sensor offset (mm) per frequency index of an `nn`-point transform of
+/// pupil samples `du` apart: Δ = −λ/(nn du) · A^{-T} (kx, ky).
+fn fft_map(a: [[f64; 2]; 2], lambda: f64, nn: usize, du: f64) -> [[f64; 2]; 2] {
+    let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+    let scale = -(lambda * 1e-6) / (nn as f64 * du);
+    [[scale * a[1][1] / det, -scale * a[1][0] / det], [-scale * a[0][1] / det, scale * a[0][0] / det]]
+}
+
+/// What a GPU needs to sample a wavefront: the pupil grid and the OPD at
+/// every `step`-th sample. The OPD nodes are traced without apertures
+/// (extrapolated where even that fails), so the wavefront continues smoothly
+/// past the pupil edge and can be interpolated anywhere; which samples pass,
+/// and the affine fit of exit directions, are left to the GPU.
+pub struct WavefrontPlan {
+    pub lambda: f64,
+    pub n: usize,
+    pub step: usize,
+    /// Sample (i, j) lies at (x0 + (i + ½) du, y0 + (j + ½) du, z).
+    pub x0: f64,
+    pub y0: f64,
+    pub z: f64,
+    pub du: f64,
+    pub source: Source,
+    /// (n/step + 3)² OPDs (mm), row-major; node (I, J) is sample step · (I − 1, J − 1).
+    pub nodes: Vec<f32>,
+    /// Chief ray's point on the sensor plane.
+    pub reference: [f64; 2],
+}
+
+impl WavefrontPlan {
+    pub fn new(lens: &Lens, src: &Source, l: f64, max_n: usize, frame: &PupilFrame) -> Option<WavefrontPlan> {
+        let Setup { m, q_c, rf, chief, cx, cy, side, n } = Setup::new(lens, src, l, None, max_n, Some(frame))?;
+        let du = side / n as f64;
+        let (x0, y0) = (cx - side / 2.0, cy - side / 2.0);
+        let step = (n / 32).clamp(1, 16);
+        let nc = n / step + 3;
+        let traced: Vec<Option<f64>> = (0..nc * nc)
+            .into_par_iter()
+            .map(|k| {
+                let (i, j) = (((k % nc) as f64 - 1.0) * step as f64, ((k / nc) as f64 - 1.0) * step as f64);
+                let q = Vec3::new(x0 + (i + 0.5) * du, y0 + (j + 0.5) * du, q_c.z);
+                trace_to_sphere(lens, src, q, l, &m, &rf, false).map(|r| r.opl - chief.opl)
+            })
+            .collect();
+        // Nodes even unaperture-traced rays miss: extrapolate linearly from
+        // their neighbours, a ring at a time.
+        let mut opd = traced;
+        for _ in 0..4 {
+            let prev = opd.clone();
+            let at = |x: isize, y: isize| if x < 0 || y < 0 || x >= nc as isize || y >= nc as isize { None } else { prev[y as usize * nc + x as usize] };
+            for k in 0..nc * nc {
+                if prev[k].is_some() {
+                    continue;
+                }
+                let (x, y) = ((k % nc) as isize, (k / nc) as isize);
+                let est: Vec<f64> = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .filter_map(|&(dx, dy)| {
+                        let v1 = at(x + dx, y + dy)?;
+                        Some(at(x + 2 * dx, y + 2 * dy).map_or(v1, |v2| 2.0 * v1 - v2))
+                    })
+                    .collect();
+                if !est.is_empty() {
+                    opd[k] = Some(est.iter().sum::<f64>() / est.len() as f64);
+                }
+            }
+        }
+        Some(WavefrontPlan {
+            lambda: l,
+            n,
+            step,
+            x0,
+            y0,
+            z: q_c.z,
+            du,
+            source: *src,
+            nodes: opd.iter().map(|v| v.unwrap_or(0.0) as f32).collect(),
+            reference: [rf.centre.x, rf.centre.y],
+        })
+    }
+}
+
 impl Wavefront {
     /// Wavefront for `src` at wavelength `l` (nm) on an n × n pupil grid; `n`
     /// None chooses it from the geometric spot size (Nyquist for the
@@ -254,42 +428,7 @@ impl Wavefront {
 
     /// `compute`, optionally tracing every pupil sample instead of interpolating.
     fn compute_sampled(lens: &Lens, src: &Source, l: f64, n: Option<usize>, max_n: usize, frame: Option<&PupilFrame>, interpolate: bool) -> Option<Wavefront> {
-        let m = lens.media(l);
-        let (q_c, rf) = chief(lens, src, l, &m)?;
-        let chief = trace_to_sphere(lens, src, q_c, l, &m, &rf, false)?;
-        let own;
-        let frame = match frame {
-            Some(f) => f,
-            None => {
-                own = PupilFrame::find(lens, src, l)?;
-                &own
-            }
-        };
-        let PupilFrame { cx, cy, side, extent } = *frame;
-        let sample_grid = |n: usize| -> Vec<Option<PupilRay>> {
-            let du = side / n as f64;
-            (0..n * n)
-                .into_par_iter()
-                .map(|k| {
-                    let q = Vec3::new(cx - side / 2.0 + ((k % n) as f64 + 0.5) * du, cy - side / 2.0 + ((k / n) as f64 + 0.5) * du, q_c.z);
-                    trace_to_sphere(lens, src, q, l, &m, &rf, true)
-                })
-                .collect()
-        };
-        let n = match n {
-            Some(n) => n,
-            None => {
-                // Pupil width in direction cosines, from a coarse grid.
-                let coarse = sample_grid(16);
-                let dirs: Vec<Vec3> = coarse.iter().flatten().map(|r| r.dir).collect();
-                let extent = coarse.iter().flatten().map(|r| r.hit[0].hypot(r.hit[1])).fold(extent, f64::max);
-                let span = |f: fn(&Vec3) -> f64| dirs.iter().map(f).fold(f64::NEG_INFINITY, f64::max) - dirs.iter().map(f).fold(f64::INFINITY, f64::min);
-                let width = span(|d| d.x).max(span(|d| d.y)).max(1e-6) * 16.0 / 15.0;
-                // The PSF window n·λ/width must hold the spot with margin.
-                let need = 3.0 * (extent + 2.0 * l * 1e-6 / width) * width / (l * 1e-6);
-                (need.ceil() as usize).next_power_of_two().clamp(64, max_n)
-            }
-        };
+        let Setup { m, q_c, rf, chief, cx, cy, side, n } = Setup::new(lens, src, l, n, max_n, frame)?;
         let du = side / n as f64;
         let trace = |i: f64, j: f64| {
             let q = Vec3::new(cx - side / 2.0 + (i + 0.5) * du, cy - side / 2.0 + (j + 0.5) * du, q_c.z);
@@ -308,8 +447,9 @@ impl Wavefront {
             .map(|k| trace(((k % nc) as f64 - 1.0) * step as f64, ((k / nc) as f64 - 1.0) * step as f64))
             .collect();
         let node = |ci: usize, cj: usize| coarse[(cj + 1) * nc + ci + 1].as_ref();
-        let sample = |r: &PupilRay| (r.t.sqrt(), r.opl - chief.opl);
-        let samples: Vec<Option<(f64, f64)>> = (0..n * n)
+        // Per sample: amplitude, OPD and exit direction cosines (for the fit).
+        let sample = |r: &PupilRay| [r.t.sqrt(), r.opl - chief.opl, r.dir.x, r.dir.y];
+        let full: Vec<Option<[f64; 4]>> = (0..n * n)
             .into_par_iter()
             .map(|k| {
                 let (i, j) = (k % n, k / n);
@@ -317,13 +457,14 @@ impl Wavefront {
                 if i % step == 0 && j % step == 0 {
                     return node(ci, cj).map(sample);
                 }
-                let mut amp = [[0.0; 4]; 4];
-                let mut opd = [[0.0; 4]; 4];
+                let mut st = [[[0.0; 4]; 4]; 4];
                 let mut open = 0;
-                for (dj, (ar, or)) in amp.iter_mut().zip(opd.iter_mut()).enumerate() {
+                for dj in 0..4 {
                     for di in 0..4 {
                         if let Some(r) = coarse[(cj + dj) * nc + ci + di].as_ref() {
-                            (ar[di], or[di]) = sample(r);
+                            for (c, v) in sample(r).into_iter().enumerate() {
+                                st[c][dj][di] = v;
+                            }
                             open += 1;
                         }
                     }
@@ -334,62 +475,23 @@ impl Wavefront {
                     _ => return trace(i as f64, j as f64).as_ref().map(sample),
                 }
                 let (fx, fy) = ((i % step) as f64 / step as f64, (j % step) as f64 / step as f64);
-                Some((bicubic(&amp, fx, fy), bicubic(&opd, fx, fy)))
+                Some(st.map(|c| bicubic(&c, fx, fy)))
             })
             .collect();
         // Least-squares affine fit of exit direction cosines over the pupil.
-        let (mut s, mut su, mut sv, mut suu, mut suv, mut svv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let (mut sl, mut sm, mut slu, mut slv, mut smu, mut smv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let mut spot = Vec::new();
-        for cj in 0..n / step {
-            for ci in 0..n / step {
-                if let Some(r) = node(ci, cj) {
-                    let u = ((ci * step) as f64 + 0.5) * du - side / 2.0;
-                    let v = ((cj * step) as f64 + 0.5) * du - side / 2.0;
-                    spot.push(r.hit);
-                    s += 1.0;
-                    su += u;
-                    sv += v;
-                    suu += u * u;
-                    suv += u * v;
-                    svv += v * v;
-                    sl += r.dir.x;
-                    sm += r.dir.y;
-                    slu += r.dir.x * u;
-                    slv += r.dir.x * v;
-                    smu += r.dir.y * u;
-                    smv += r.dir.y * v;
-                }
-            }
-        }
-        // Solve the 3×3 normal equations for (c0, a_u, a_v) for L and for M.
-        let solve = |b0: f64, bu: f64, bv: f64| -> [f64; 3] {
-            let mat = [[s, su, sv], [su, suu, suv], [sv, suv, svv]];
-            let det = |m: [[f64; 3]; 3]| {
-                m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-            };
-            let d = det(mat);
-            let rhs = [b0, bu, bv];
-            let mut x = [0.0; 3];
-            for c in 0..3 {
-                let mut mc = mat;
-                for r in 0..3 {
-                    mc[r][c] = rhs[r];
-                }
-                x[c] = det(mc) / d;
-            }
-            x
-        };
-        let fl = solve(sl, slu, slv);
-        let fm = solve(sm, smu, smv);
+        let fit = full.iter().enumerate().filter_map(|(k, s)| {
+            s.map(|s| (((k % n) as f64 + 0.5) * du - side / 2.0, ((k / n) as f64 + 0.5) * du - side / 2.0, Vec3::new(s[2], s[3], 0.0)))
+        });
+        let a = affine_fit(fit);
+        let samples: Vec<Option<(f64, f64)>> = full.iter().map(|s| s.map(|s| (s[0], s[1]))).collect();
+        let spot = coarse.iter().flatten().map(|r| r.hit).collect();
         let power = samples.iter().flatten().map(|(a, _)| a * a).sum::<f64>() * du * du;
         Some(Wavefront {
             lambda: l,
             n,
             du,
             samples,
-            a: [[fl[1], fl[2]], [fm[1], fm[2]]],
+            a,
             reference: [rf.centre.x, rf.centre.y],
             power,
             spot,
@@ -479,11 +581,7 @@ impl PsfGrid {
         let e: Vec<f32> = buf.iter().map(|c| c.norm_sqr()).collect();
         let total: f64 = e.iter().map(|&v| v as f64).sum();
         let e = e.into_iter().map(|v| (v as f64 / total) as f32).collect();
-        // Δ = −λ/(N du) · A^{-T} (kx, ky)
-        let a = wf.a;
-        let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
-        let scale = -(wf.lambda * 1e-6) / (nn as f64 * wf.du);
-        let map = [[scale * a[1][1] / det, -scale * a[1][0] / det], [-scale * a[0][1] / det, scale * a[0][0] / det]];
+        let map = fft_map(wf.a, wf.lambda, nn, wf.du);
         PsfGrid { reference: wf.reference, nn, map, e }
     }
 

@@ -10,6 +10,7 @@ use crate::spectrum::{ColorSystem, LAMBDA_MIN, LAMBDA_RANGE, cie_xyz, srgb_encod
 use anyhow::{Context, Result, bail};
 use bytemuck::{Pod, Zeroable};
 mod diffraction;
+pub mod wave;
 
 pub use eframe::wgpu;
 use wgpu::util::DeviceExt;
@@ -282,6 +283,53 @@ fn scene_light_grids(lens: &Lens, lights: &[(crate::math::Vec3, f64)], pitch: f6
             ((2.0 * px + 8.0) as u32).div_ceil(16).clamp(1, max / 16) * 16
         })
         .collect()
+}
+
+/// Lens blob words of the surfaces, 16 per surface.
+fn surface_words(lens: &Lens) -> Result<Vec<u32>> {
+    let mut words = Vec::new();
+    for srf in &lens.surfaces {
+        let c = if srf.radius == 0.0 { 0.0 } else { 1.0 / srf.radius };
+        if srf.aspheric.len() > 8 {
+            bail!("the GPU renderer supports aspheric terms up to a18");
+        }
+        let mut a = [0u32; 8];
+        for (k, v) in srf.aspheric.iter().enumerate() {
+            a[k] = (*v as f32).to_bits();
+        }
+        words.extend([
+            (srf.z as f32).to_bits(),
+            (c as f32).to_bits(),
+            (srf.semi_diameter as f32).to_bits(),
+            srf.is_stop as u32,
+            (srf.decenter.0 as f32).to_bits(),
+            (srf.decenter.1 as f32).to_bits(),
+            (srf.conic as f32).to_bits(),
+            srf.is_aspheric() as u32,
+        ]);
+        words.extend(a);
+    }
+    Ok(words)
+}
+
+/// A plane 1 mm in front of the lens.
+fn front_z(lens: &Lens) -> f64 {
+    lens.surfaces
+        .iter()
+        .map(|srf| (0..=16).map(|k| srf.sag(srf.semi_diameter * k as f64 / 16.0)).fold(0.0, f64::min) + srf.z)
+        .fold(0.0, f64::min)
+        - 1.0
+}
+
+/// Refractive index of every medium at 1 nm steps from LAMBDA_MIN.
+fn media_table(lens: &Lens) -> Vec<f32> {
+    let mut t = Vec::new();
+    for m in 0..=lens.surfaces.len() {
+        for i in 0..=400 {
+            t.push(lens.media(LAMBDA_MIN + i as f64).n[m] as f32);
+        }
+    }
+    t
 }
 
 /// Encodes an event list for the lens blob.
@@ -558,28 +606,7 @@ impl GpuRenderer {
         let n = lens.surfaces.len();
 
         // Lens blob: surfaces, then paths.
-        let mut lens_blob: Vec<u32> = Vec::new();
-        for srf in &lens.surfaces {
-            let c = if srf.radius == 0.0 { 0.0 } else { 1.0 / srf.radius };
-            if srf.aspheric.len() > 8 {
-                bail!("the GPU renderer supports aspheric terms up to a18");
-            }
-            let mut a = [0u32; 8];
-            for (k, v) in srf.aspheric.iter().enumerate() {
-                a[k] = (*v as f32).to_bits();
-            }
-            lens_blob.extend([
-                (srf.z as f32).to_bits(),
-                (c as f32).to_bits(),
-                (srf.semi_diameter as f32).to_bits(),
-                srf.is_stop as u32,
-                (srf.decenter.0 as f32).to_bits(),
-                (srf.decenter.1 as f32).to_bits(),
-                (srf.conic as f32).to_bits(),
-                srf.is_aspheric() as u32,
-            ]);
-            lens_blob.extend(a);
-        }
+        let mut lens_blob = surface_words(lens)?;
         let ghosts = lens.ghost_paths();
         let ghosts_back = lens.ghost_paths_backward();
         let mut paths = vec![encode_path(&lens.forward_path), encode_path(&lens.backward_path)];
@@ -601,12 +628,7 @@ impl GpuRenderer {
         // Tables: media, upsampling, per-bin CMF, light spectra, palettes.
         let mut tables: Vec<f32> = Vec::new();
         let media_off = tables.len();
-        for m in 0..=n {
-            for i in 0..=400 {
-                let media = lens.media(LAMBDA_MIN + i as f64);
-                tables.push(media.n[m] as f32);
-            }
-        }
+        tables.extend(media_table(lens));
         let up_off = tables.len();
         for i in 0..=400 {
             tables.extend(self.cs.up_vec(LAMBDA_MIN + i as f64).map(|v| v as f32));
@@ -698,12 +720,7 @@ impl GpuRenderer {
         let half_h = s.h as f64 * pitch / 2.0;
         let par = lens.paraxial_data(crate::glass::LAMBDA_D);
         let iris = &lens.iris;
-        let front_z = lens
-            .surfaces
-            .iter()
-            .map(|srf| (0..=16).map(|k| srf.sag(srf.semi_diameter * k as f64 / 16.0)).fold(0.0, f64::min) + srf.z)
-            .fold(0.0, f64::min)
-            - 1.0;
+        let front_z = front_z(lens);
         let m = self.cs.rgb_matrix();
         let centered = lens.is_centered();
         let (nx, ny) = (25u32, 17u32);
@@ -1443,7 +1460,7 @@ mod tests {
         let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 700.0)], lights: vec![], background: [0.02, 0.02, 0.02] };
         let s = settings(120, 80, 8, false);
         let pitch = 36.0 / 120.0;
-        let bank = crate::psfbank::PsfBank::build(&lens, Some(2000.0), 8, pitch, 21.63, &|_| {});
+        let bank = crate::psfbank::PsfBank::build(&lens, Some(2000.0), 8, pitch, 21.63, Some(&wave::WaveGpu::new(&GpuContext::headless().unwrap())), &|_| {});
         let mut g = GpuRenderer::new(ctx);
         g.set_scene(&scene);
         let mut film = |b: Option<&crate::psfbank::PsfBank>| {
@@ -1473,7 +1490,7 @@ mod tests {
         let (w, h, bins) = (960, 640, 8);
         let pitch = 36.0 / w as f64;
         // A tiny light on a bank field sample.
-        let bank = crate::psfbank::PsfBank::build(&lens, Some(3000.0), bins, pitch, 21.63, &|_| {});
+        let bank = crate::psfbank::PsfBank::build(&lens, Some(3000.0), bins, pitch, 21.63, Some(&wave::WaveGpu::new(&GpuContext::headless().unwrap())), &|_| {});
         let ep_z = lens.paraxial_data(crate::glass::LAMBDA_D).entrance_pupil_z;
         let tan_t = bank.tan_max * 7.0 / (bank.n_theta - 1) as f64;
         // Off the y axis by a fraction of a pixel, so the image is not on a pixel boundary.

@@ -5,7 +5,7 @@ struct FftParams {
     w: u32, h: u32, pw: u32, ph: u32,
     bins: u32, b0: u32, b1: u32, inverse: u32,
     rows: u32, cols: u32, kbin: u32, koff: u32,
-    khalf: u32, _p0: u32, _p1: u32, _p2: u32,
+    khalf: u32, src_rows: u32, batch_rows: u32, _p2: u32,
 }
 
 @group(0) @binding(0) var<uniform> F: FftParams;
@@ -18,19 +18,20 @@ struct FftParams {
 
 var<workgroup> tile: array<vec2<f32>, 272>;
 
-// dst (cols × rows) = transpose of src (rows × cols).
+// dst (cols × rows) = transpose of src (rows × cols), for matrix wg.z of a batch.
 @compute @workgroup_size(16, 16)
 fn transpose(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+    let base = wg.z * F.rows * F.cols;
     let x = wg.x * 16u + lid.x;
     let y = wg.y * 16u + lid.y;
     if (x < F.cols && y < F.rows) {
-        tile[lid.y * 17u + lid.x] = src[y * F.cols + x];
+        tile[lid.y * 17u + lid.x] = select(src[base + y * F.cols + x], vec2<f32>(0.0), F.src_rows != 0u && y >= F.src_rows);
     }
     workgroupBarrier();
     let ox = wg.y * 16u + lid.x;
     let oy = wg.x * 16u + lid.y;
     if (ox < F.rows && oy < F.cols) {
-        dst[oy * F.rows + ox] = tile[lid.x * 17u + lid.y];
+        dst[base + oy * F.rows + ox] = tile[lid.x * 17u + lid.y];
     }
 }
 

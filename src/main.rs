@@ -194,13 +194,13 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
     };
     let mut gpu_diffracted = false;
     let mut film = if let Some(ctx) = gpu {
-        let mut g = gpu::GpuRenderer::new(ctx);
+        let mut g = gpu::GpuRenderer::new(ctx.clone());
         g.set_scene(&scene);
         let settings = gpu_settings(&file, w, h, norm);
         let bank = if c.wave_optics {
             let tb = Instant::now();
             let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
-            let b = psfbank::PsfBank::build(&lens, focus, c.spectral_bins, pitch, half_diag, &|_| {});
+            let b = psfbank::PsfBank::build(&lens, focus, c.spectral_bins, pitch, half_diag, Some(&gpu::wave::WaveGpu::new(&ctx)), &|_| {});
             eprintln!(
                 "  PSF bank: {} PSFs ({}×{}×{}×{} bins), kernels {}² px, built in {:.1} s",
                 b.refs.len(),

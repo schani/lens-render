@@ -97,7 +97,7 @@ Any `[camera]` key can be overridden with `--set key=value`.
 
 ### Viewer
 
-Controls for f-number, focus distance (or click the image to focus there),
+Controls for the lens (any `.lens` file next to the scene's), f-number, focus distance (or click the image to focus there),
 iris blades, blade curvature and rotation, coating, ghosts, diffraction,
 exposure, tone curve and resolution. Accumulation restarts on lens changes;
 exposure and tone curve apply without restarting. Diffraction switches on
@@ -128,8 +128,13 @@ Limits:
   lights get shorter star spikes and less glow than in the default mode.
 - Decentred lenses are not supported in this mode.
 
-The bank is built on the CPU: 15–45 s for the bundled lenses, in the
-background in the viewer.
+The bank is built on the GPU in 1–3 s for the bundled lenses (CPU without
+one), in the background in the viewer. The CPU traces, in f64, the wavefront
+at 32 × 32 nodes per PSF without apertures; the GPU traces every pupil
+sample in f32 to decide whether it passes, interpolates the wavefront, fits
+the exit directions, transforms and bins. f32 alone could not resolve
+optical paths to nanometres; interpolation keeps the result within 0.2 % of
+the CPU bank.
 
 ### Speed
 
@@ -257,6 +262,8 @@ nominal distance to the image plane; focusing moves the sensor.
   geometric spot (centroid and RMS radius).
 - Wave-optics rendering conserves energy (0.01 %), and an in-focus light
   reproduces the CPU wave PSF on the film (3 % L1).
+- The GPU-built PSF bank matches the CPU-built one per entry (≤ 0.2 % L1);
+  interpolating the wavefront matches tracing every pupil sample (≤ 0.01 %).
 - Aspheres: the Newton intersection reproduces exact spheres; GPU matches
   CPU on an aspheric lens.
 

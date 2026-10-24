@@ -1,5 +1,6 @@
 //! Interactive viewer: progressive GPU rendering with live lens controls.
 
+use crate::gpu::wave::WaveGpu;
 use crate::gpu::{self, GpuContext, GpuRenderer, Tonemap, wgpu};
 use crate::lens::{Coating, Lens};
 use crate::math::{Ray, Vec3};
@@ -69,6 +70,9 @@ pub struct Viewer {
     status: String,
     bank: Option<(Controls, Arc<PsfBank>)>,
     bank_job: Option<BankJob>,
+    /// PSF banks are built on a device of their own: work submitted from
+    /// another thread would make the window's surface reconfiguration fail.
+    wave: Arc<std::sync::OnceLock<Option<WaveGpu>>>,
     frame_ms: f64,
     last_frame: Instant,
     /// Self-check: change controls along the way, then after this many frames
@@ -160,6 +164,7 @@ impl Viewer {
             status: String::new(),
             bank: None,
             bank_job: None,
+            wave: Default::default(),
             frame_ms: 0.0,
             last_frame: Instant::now(),
             shot: std::env::var("LENS_VIEWER_SHOT").ok().map(|p| (32, p)),
@@ -212,11 +217,12 @@ impl Viewer {
         if k.wave && bank.is_none() && self.bank_job.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             let progress = Arc::new(AtomicU32::new(0));
-            let (lens2, prog) = (lens.clone(), progress.clone());
+            let (lens2, prog, wave) = (lens.clone(), progress.clone(), self.wave.clone());
             let (bins, pitch) = (c.spectral_bins, c.sensor_width_mm / k.width as f64);
             let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
             std::thread::spawn(move || {
-                let b = PsfBank::build(&lens2, focus, bins, pitch, half_diag, &|p| prog.store((p * 1000.0) as u32, Ordering::Relaxed));
+                let gpu = wave.get_or_init(|| GpuContext::headless().ok().map(|c| WaveGpu::new(&c)));
+                let b = PsfBank::build(&lens2, focus, bins, pitch, half_diag, gpu.as_ref(), &|p| prog.store((p * 1000.0) as u32, Ordering::Relaxed));
                 let _ = tx.send(b);
             });
             self.bank_job = Some(BankJob { key, result: rx, progress });

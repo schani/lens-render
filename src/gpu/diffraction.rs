@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
-struct FftParams {
+pub(super) struct FftParams {
     w: u32,
     h: u32,
     pw: u32,
@@ -19,12 +19,17 @@ struct FftParams {
     b0: u32,
     b1: u32,
     inverse: u32,
-    rows: u32,
-    cols: u32,
+    pub(super) rows: u32,
+    pub(super) cols: u32,
     kbin: u32,
     koff: u32,
     khalf: u32,
-    _p: [u32; 3],
+    /// Transpose: source rows from here on read as zero (0 = none).
+    pub(super) src_rows: u32,
+    /// FFT: rows come in matrices of `batch_rows` rows of a square N × N
+    /// layout, the rest of each matrix untouched (0 = contiguous rows).
+    pub(super) batch_rows: u32,
+    _p: u32,
 }
 
 /// What the kernels depend on.
