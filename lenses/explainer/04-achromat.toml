@@ -1,0 +1,21 @@
+# Cemented achromat, stop at the lens: colour, spherical aberration and coma.
+name = "Explainer 4: cemented achromat 50mm f/8"
+header = """
+Explainer #4: cemented achromat (N-BK7 crown + F2 flint), stop at the
+lens, f/8: a telescope-objective (Fraunhofer) doublet.
+Role: two glasses cancel axial colour and spherical aberration; sharp
+centre, bad corners (astigmatism, field curvature).
+Design: three curvatures vary (EFL 50 mm), minimising the white-light RMS
+spot on axis plus the Seidel coma, object at 2.5 m.
+Rows match 05-landscape (stop first) so the video can morph them."""
+output = "04-achromat.lens"
+fstop = 8
+fields = [0.0]
+seidel_weights = [0.0, 2.0]
+curvatures = [2, 3, 4]
+start = """
+stop     0.5   air     3.2
+ 30.8    4.0   N-BK7   7
+-22.5    2.0   F2      7
+-80      46    air     7
+"""

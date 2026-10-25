@@ -83,6 +83,17 @@ pub fn seidel(lens: &Lens, theta: f64, distance: Option<f64>) -> Seidel {
     Seidel { surfaces, sum, stop_index: lens.stop_index }
 }
 
+/// Seidel sums `s.sum` as transverse ray aberrations on the sensor in µm:
+/// the image-plane error of the pupil-edge ray, ε = 2N ∂W/∂ρ (N the image-side
+/// working f-number), for the ray in the fan that shows it most:
+/// spherical 8N·W040, tangential coma 6N·W131, astigmatism 4N·W222,
+/// field curvature 4N·W220P, distortion 2N·W311, axial colour 4N·W020,
+/// lateral colour 2N·W111 (× λ). Signed; the size is the magnitude.
+pub fn transverse_um(s: &Seidel, fnumber: f64) -> [f64; 7] {
+    const K: [f64; 7] = [8.0, 6.0, 4.0, 4.0, 2.0, 4.0, 2.0];
+    std::array::from_fn(|k| K[k] * fnumber * s.sum[k] * LAMBDA_W * 1e-3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +175,23 @@ mod tests {
             assert!((lsa(rho) / seidel - 1.0).abs() < tol, "ρ {rho}: real {} vs Seidel {seidel}", lsa(rho));
         }
         assert!(s1 > 0.0 && lsa(1.0) < 0.0, "undercorrected");
+    }
+
+    /// Transverse spherical aberration 8N·W040 against the real marginal
+    /// ray of a slow singlet (third order dominates), at the paraxial focus.
+    #[test]
+    fn transverse_spherical() {
+        let lens = Lens::parse("stop 0 air 2\n50 3 N-BK7 3\n-50 50 air 3\n").unwrap();
+        let w = seidel(&lens, 0.0, None);
+        let n_w = lens.paraxial_data(LAMBDA_D).efl / (2.0 * lens.iris.max_radius);
+        let t = transverse_um(&w, n_w);
+        // Seidel sums use d-line indices.
+        let m = lens.media(LAMBDA_D);
+        let z = lens.paraxial_focus(None, LAMBDA_D);
+        let (r, _) = lens.trace_forward(Ray { o: Vec3::new(0.0, 2.0, -1.0), d: Vec3::new(0.0, 0.0, 1.0) }, LAMBDA_D, &m).unwrap();
+        let real = (r.o.y + (z - r.o.z) * r.d.y / r.d.z) * 1000.0;
+        assert!((t[0].abs() / real.abs() - 1.0).abs() < 0.03, "8N·W040 {} vs real {real}", t[0]);
+        assert!(t[0] * real < 0.0, "undercorrected: marginal ray crosses before focus");
+        assert_eq!(t[4], 0.0);
     }
 }

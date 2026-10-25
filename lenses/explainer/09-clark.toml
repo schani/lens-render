@@ -1,0 +1,35 @@
+# Four-element symmetric air-spaced Gauss type (Alvan Clark 1888).
+name = "Explainer 9: Clark-type symmetric Gauss 50mm f/4"
+header = """
+Explainer #9: four-element symmetric air-spaced Gauss type (Alvan Clark
+1888): on each side of the stop a positive N-SK16 meniscus outside and a
+negative F2 meniscus inside, all concave towards the stop.
+Role: the triplet's negative lens split around the stop; symmetry is back
+and oblique rays meet the surfaces nearly head-on.
+Design: the front half's curvatures, thicknesses and spacings vary,
+mirrored to the rear half (EFL 50 mm, stop gaps >= 3 mm), minimising the
+white-light RMS spot at 0, 0.5, 0.7 and 1.0 of the field, object at 2.5 m;
+vignetting towards the corner up to half the light. Fastest useful
+f-number: none of f/2.8-f/4 is sharp; f/4 shown. Start: an earlier run
+of this job from a rough sketch."""
+output = "09-clark.lens"
+fstop = 4
+symmetric = true
+curvatures = [1, 2, 3, 4]
+thicknesses = [1, 2, 3, 4]
+vignetting = 0.5
+restarts = 20
+restart_scale = 0.1
+# Room for an iris between the halves.
+thickness_limits = [[4, 3, 100]]
+start = """
+  13.5734     6.1777      N-SK16         8.980
+  27.3562     0.0998      air            5.920
+  11.2448     1.4994      F2             6.100
+  8.1033      4.6130      air            4.630
+  stop        4.6130      air            4.309
+  -8.1033     1.4994      F2             4.920
+  -11.2448    0.0998      air            6.710
+  -27.3562    6.1777      N-SK16         12.160
+  -13.5734    40.0000     air            10.120
+"""

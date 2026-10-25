@@ -1,0 +1,20 @@
+# Singlet bent for least spherical aberration: monochromatic axial RMS spot.
+name = "Explainer 2: best-form N-BK7 singlet 50mm f/4"
+header = """
+Explainer #2: the singlet of #1 bent to its best form for spherical
+aberration at f/4 (convex towards the object). Also shown stopped down to
+f/16 (#3).
+Role: bending spreads the work over both surfaces; spherical aberration drops.
+Design: both curvatures vary at fixed thickness and EFL 50 mm, minimising
+the 546 nm RMS spot on axis (object at 2.5 m).
+Rows match 01-singlet and 02b-flat-front."""
+output = "02-best-form.lens"
+fstop = 4
+fields = [0.0]
+mono = 546.07
+curvatures = [2, 3]
+start = """
+stop     0.5   air     6.25
+ 51.7    2.5   N-BK7   7
+-51.7    48    air     7
+"""
