@@ -3,8 +3,8 @@
 // Lens blob (`lens`): 16 words per surface (z, curvature, semi-diameter,
 // is_stop, decenter x, decenter y, conic, is_aspheric, A4 … A18), then event paths of
 // `path_stride` words each: [length, events...]; an event is
-// surface | forward << 8 | reflect << 9. Path 0 traces forwards, path 1
-// backwards, then the ghost paths forwards, then backwards.
+// surface | forward << 8 | reflect << 9 (surface n_surf is the sensor). Path 0
+// traces forwards, path 1 backwards, then the ghost paths forwards, then backwards.
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> lens: array<u32>;
@@ -234,6 +234,24 @@ fn trace_clip(ray: ptr<function, Ray>, l: f32, path: u32, track: bool, soft: boo
         let i = ev & 0xffu;
         let fwd = ((ev >> 8u) & 1u) != 0u;
         let refl = ((ev >> 9u) & 1u) != 0u;
+        if (i == P.n_surf) {
+            // The sensor: a flat mirror over its area.
+            let dz = (*ray).d.z;
+            let ts = (P.sensor_z - (*ray).o.z) / dz;
+            if (dz <= 0.0 || ts < 1e-5) { return -1.0; }
+            let ps = (*ray).o + (*ray).d * ts;
+            let rs = max(abs(ps.x) / P.sensor_hw, abs(ps.y) / P.sensor_hh);
+            if (track) {
+                *clip = max(*clip, rs);
+                if (*clip > 1.0 && !soft) { return -1.0; }
+            } else if (rs > 1.0) {
+                return -1.0;
+            }
+            t *= P.sensor_r;
+            (*ray).o = ps;
+            (*ray).d.z = -dz;
+            continue;
+        }
         let s = surf(i);
         let d = (*ray).d;
         // Sphere through the vertex, c(x²+y²+z²) − 2z = 0, in vertex coordinates.

@@ -1,12 +1,13 @@
-//! Ghost images: light reflected at one surface, back again at an earlier
-//! one, and on to the sensor.
+//! Ghost images: light reflected at one surface (or the sensor), back again
+//! at an earlier one, and on to the sensor.
 
 use crate::lens::Lens;
 use crate::math::Vec3;
 use crate::psf::{Source, meridional_fan, pupil_rays};
 
 pub struct Ghost {
-    /// Surfaces (0-based) of the first and second reflection, a > b.
+    /// Surfaces (0-based) of the first and second reflection, a > b;
+    /// `a == lens.surfaces.len()` is the sensor.
     pub a: usize,
     pub b: usize,
     /// Energy reaching the sensor relative to the direct image.
@@ -79,5 +80,35 @@ mod tests {
         assert!(bare[0].energy > 1e-3 && bare[0].energy < 6e-3);
         assert!(coated[0].energy < 0.3 * bare[0].energy);
         assert!(bare.iter().all(|g| g.a > g.b));
+    }
+
+    /// A sensor reflecting 5 % against multicoated glass and uncoated cemented
+    /// interfaces (≲ 0.7 %): on axis, the strongest sensor ghost (5 %·R_b)
+    /// carries about an order of magnitude more light than the strongest
+    /// lens–lens ghost (R_a·R_b), luminance-weighted over the band: ~6× wide
+    /// open (element rims clip the reflected cone), ~20× at f/4.
+    #[test]
+    fn sensor_ghosts_dominate() {
+        let mut lens = Lens::parse(include_str!("../lenses/summilux-50-asph.lens")).unwrap();
+        let n = lens.surfaces.len();
+        let src = Source::Infinity(Vec3::new(0.0, 0.0, 1.0));
+        for fstop in [1.4, 4.0] {
+            lens.prepare(fstop, 0, 0.0, 0.0, None, 0.0).unwrap();
+            lens.sensor_reflectance = 0.0;
+            assert!(ghosts(&lens, &src, 550.0).iter().all(|g| g.a < n));
+            lens.sensor_reflectance = 0.05;
+            assert_eq!(lens.ghost_paths().iter().filter(|g| g.0 == n).count(), n - 1);
+            let (mut sensor, mut glass) = (0.0, 0.0);
+            for l in [450.0, 500.0, 550.0, 600.0, 650.0] {
+                let all = ghosts(&lens, &src, l);
+                let s = all.iter().find(|g| g.a == n).unwrap();
+                let g = all.iter().find(|g| g.a < n).unwrap();
+                println!("f/{fstop} {l} nm: sensor ghost {:.5} % (b = {}), lens ghost {:.5} % ({}↔{})", 100.0 * s.energy, s.b, 100.0 * g.energy, g.a, g.b);
+                let y = crate::spectrum::cie_xyz(l)[1];
+                (sensor, glass) = (sensor + y * s.energy, glass + y * g.energy);
+            }
+            println!("f/{fstop}: sensor / lens ghost {:.1}", sensor / glass);
+            assert!(sensor > 5.0 * glass);
+        }
     }
 }

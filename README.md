@@ -30,6 +30,7 @@ Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
 | Natural vignetting (cos⁴) and mechanical vignetting (cat's-eye bokeh) | Sampling through the real exit pupil; clipping at element clear apertures |
 | Transmission losses, coating tint | Fresnel equations; uncoated, single-layer MgF₂ quarter-wave, or broadband quarter–half–quarter multi-layer coating (thin-film interference) |
 | Ghosts (lens flare) | All two-reflection paths, traced from each light as a ray grid and rasterised (noise-free, with caustics) |
+| Sensor ghosts | Optional: light reflected off the sensor, back off a lens surface and onto the sensor again; strongest for lights near the image centre. The sensor is a flat mirror over its area with constant reflectance (real sensors: ~5 %, an order of magnitude above multicoated glass) |
 | Veiling glare | The same ghost paths sampled from the sensor for bright scene surfaces |
 | Diffraction, star bursts | Default: Fraunhofer PSF of the iris shape per wavelength, convolved with the image. With `wave_optics`: wave-optical PSFs (below) |
 | Bokeh shape | Iris with straight or curved blades; round when wide open |
@@ -103,7 +104,7 @@ Any `[camera]` key can be overridden with `--set key=value`.
 ### Viewer
 
 Controls for the lens (any `.lens` file next to the scene's), focal length (zoom lenses), f-number, focus distance (or click the image to focus there),
-iris blades, blade curvature and rotation, coating, ghosts, diffraction,
+iris blades, blade curvature and rotation, coating, ghosts, sensor reflection, diffraction,
 exposure, tone curve and resolution. Accumulation restarts on lens changes;
 exposure and tone curve apply without restarting. Diffraction kernels for a new
 f-number are made in the background; the previous ones stay in use meanwhile. "Save PNG" writes `view.png`.
@@ -204,6 +205,7 @@ spp = 64                            # samples per pixel (scene surfaces)
 light_samples = 4000000             # per light, direct image (CPU renderer)
 ghost_grid = 128                    # ray grid per light and ghost path
 ghost_threshold = 0.01              # ghosts only for lights ≥ 1% of the brightest
+sensor_reflectance = 0.0            # > 0 adds sensor ghosts, e.g. 0.05
 ghosts = true
 diffraction = true
 spectral_bins = 16
@@ -290,8 +292,8 @@ nominal distance to the image plane; focusing moves the sensor.
   within 4 % (5° and 17° field); the ray grid reproduces the direct image.
 - Output images are upright.
 - The GPU renderer matches the CPU reference: scene surfaces (also with a
-  decentred element), direct light images, ghosts and veiling glare in total
-  energy within 1 %; diffraction to f32 precision.
+  decentred element), direct light images, ghosts (also off the sensor) and
+  veiling glare in total energy within 1 %; diffraction to f32 precision.
 - Diffraction kernels equal a brute-force pixel integration of the PSF.
 - Wave-optical PSFs: stopped down on axis, the MTF follows the
   diffraction-limit formula; strongly aberrated, the PSF converges to the
