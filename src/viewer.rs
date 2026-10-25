@@ -839,9 +839,12 @@ impl eframe::App for Viewer {
             return;
         }
         let frames = self.renderer.frames();
-        // A demo renders several passes per update to reach DEMO_PASSES sooner.
+        // A demo renders several passes per update to reach DEMO_PASSES sooner,
+        // and no more: every captured frame then has the same passes (and
+        // sample patterns), whenever its screenshot is taken.
+        let limit = if self.demo.is_some() { DEMO_PASSES } else { MAX_FRAMES };
         for _ in 0..if self.demo.is_some() { 4 } else { 1 } {
-            if self.renderer.frames() < MAX_FRAMES {
+            if self.renderer.frames() < limit {
                 // At most two frames in flight: keeps input latency low and the timing honest.
                 let _ = self.renderer.throttle(1);
                 self.renderer.render_frame();
