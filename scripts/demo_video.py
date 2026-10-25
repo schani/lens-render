@@ -38,6 +38,7 @@ SEGMENTS = [
     ("psf", "Wavefront & PSF", "Inspect the wavefront error, and the real point spread function, across the frame.", 0),
     ("mtf", "MTF vs. Leica's published data", "And check the MTF curves against Leica's own published measurements.", 0),
     ("light", "Light loss per surface", "Down to the light lost at every single surface.", 0),
+    ("zoom", "Zoom 24–70mm f/2.8", "And zoom lenses work too: the groups glide along their cams, and the framing, bokeh and aberrations follow.", 7),
     ("outro", "lens-render", "A real lens. Simulated, not faked.", 3),
 ]
 

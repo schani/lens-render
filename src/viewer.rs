@@ -709,6 +709,17 @@ impl Viewer {
             "psf" => self.tab = LensTab::Psf,
             "mtf" => self.tab = LensTab::Mtf,
             "light" => self.tab = LensTab::LightLoss,
+            "zoom" => {
+                if let Some((p, _)) = self.lens_files.iter().find(|(p, _)| p.to_string_lossy().contains("24-70")) {
+                    k.lens = p.clone();
+                }
+                // A new PSF bank per frame would leave the zoom geometric with
+                // wave optics popping in; the analyses' overlays and tabs lag
+                // behind, so the glass map stays up.
+                (k.fstop, k.wave) = (4.0, false);
+                (self.show_ghosts, self.show_focus, self.tab, self.diagram.selected) = (false, false, LensTab::Glass, None);
+                k.focal = if u < 0.68 { logl(24.7, 67.88, (u - 0.08) / 0.55) } else { logl(67.88, 35.0, (u - 0.72) / 0.24) };
+            }
             "outro" => {
                 self.show_lens = false;
                 (self.show_ghosts, self.show_focus) = (false, false);
