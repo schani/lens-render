@@ -110,7 +110,11 @@ fn main() -> Result<()> {
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
             let Setup { file, scene, lens_path, raw_lens, fstop, focus, .. } = setup(&scene, &overrides)?;
-            viewer::run(file, scene, lens_path, raw_lens, fstop, focus)?;
+            if std::env::var_os("LENS_VIEWER_DEMO").is_some() {
+                viewer::record_demo(file, scene, lens_path, raw_lens, fstop, focus)?;
+            } else {
+                viewer::run(file, scene, lens_path, raw_lens, fstop, focus)?;
+            }
         }
     }
     Ok(())

@@ -1,13 +1,13 @@
 //! Demo recording for the viewer: follows a timeline of narrated segments
 //! (`timeline.json` in the demo directory, written by scripts/demo_video.py),
-//! and captures one screenshot per video frame into `frames/`.
+//! and writes one image per video frame into `frames/`. The viewer runs
+//! offscreen for it (see `viewer::record_demo`).
 
 use eframe::egui;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
 
 #[derive(Deserialize, Clone)]
 pub struct Segment {
@@ -27,14 +27,11 @@ pub struct Demo {
     fps: f64,
     pub segments: Vec<Segment>,
     /// Frames captured so far.
-    frame: Arc<AtomicUsize>,
-    capturing: Arc<AtomicBool>,
-    /// When the screenshot on its way was requested.
-    requested: Mutex<Option<Instant>>,
+    frame: usize,
     writing: Arc<AtomicUsize>,
     /// Frames to write, for writer threads of our own (the shared pool may
     /// be busy with the viewer's analyses).
-    frames: mpsc::Sender<(usize, Arc<egui::ColorImage>)>,
+    frames: mpsc::Sender<(usize, egui::ColorImage)>,
     /// Simulated pointer: position and whether the button is down.
     pub pointer: Option<(egui::Pos2, bool)>,
     sent: Option<(egui::Pos2, bool)>,
@@ -44,7 +41,7 @@ impl Demo {
     pub fn load(dir: PathBuf) -> anyhow::Result<Demo> {
         let t: Timeline = serde_json::from_str(&std::fs::read_to_string(dir.join("timeline.json"))?)?;
         std::fs::create_dir_all(dir.join("frames"))?;
-        let (tx, rx) = mpsc::channel::<(usize, Arc<egui::ColorImage>)>();
+        let (tx, rx) = mpsc::channel::<(usize, egui::ColorImage)>();
         let rx = Arc::new(Mutex::new(rx));
         let writing: Arc<AtomicUsize> = Default::default();
         for _ in 0..4 {
@@ -63,9 +60,7 @@ impl Demo {
         Ok(Demo {
             fps: t.fps,
             segments: t.segments,
-            frame: Default::default(),
-            capturing: Default::default(),
-            requested: Mutex::new(None),
+            frame: 0,
             writing,
             frames: tx,
             pointer: None,
@@ -75,7 +70,7 @@ impl Demo {
 
     /// Video time of the frame being made.
     pub fn time(&self) -> f64 {
-        self.frame.load(Ordering::Relaxed) as f64 / self.fps
+        self.frame as f64 / self.fps
     }
 
     /// The current segment and the time within it; None when done.
@@ -84,33 +79,24 @@ impl Demo {
         self.segments.iter().find(|s| t >= s.start && t < s.start + s.dur).map(|s| (s, t - s.start))
     }
 
-    /// Screenshots the next frame if `ready`, unless one is still on its way
-    /// (or too many are still being written); returns true when the demo is over.
-    pub fn capture(&self, ctx: &egui::Context, ready: bool) -> bool {
+    /// Whether the demo is over (and every frame written).
+    pub fn done(&self) -> bool {
         let end = self.segments.last().map_or(0.0, |s| s.start + s.dur);
-        if self.time() >= end {
-            return self.writing.load(Ordering::Relaxed) == 0;
-        }
-        if !ready {
-            return false;
-        }
-        // A screenshot that never arrived is asked for again.
-        let stale = self.requested.lock().unwrap().is_some_and(|t| t.elapsed().as_secs_f64() > 3.0);
-        if (self.capturing.load(Ordering::Relaxed) && !stale) || self.writing.load(Ordering::Relaxed) > 16 {
-            return false;
-        }
-        self.capturing.store(true, Ordering::Relaxed);
-        *self.requested.lock().unwrap() = Some(Instant::now());
-        let (frame, capturing, writing, frames) = (self.frame.clone(), self.capturing.clone(), self.writing.clone(), self.frames.clone());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
-            if !capturing.swap(false, Ordering::Relaxed) {
-                return;
-            }
-            let n = frame.fetch_add(1, Ordering::Relaxed);
-            writing.fetch_add(1, Ordering::Relaxed);
-            let _ = frames.send((n, img.clone()));
-        })));
-        false
+        self.time() >= end && self.writing.load(Ordering::Relaxed) == 0
+    }
+
+    /// Whether to capture the frame now: if it is `ready`, the demo isn't
+    /// over, and the writers keep up.
+    pub fn wants(&self, ready: bool) -> bool {
+        let end = self.segments.last().map_or(0.0, |s| s.start + s.dur);
+        ready && self.time() < end && self.writing.load(Ordering::Relaxed) <= 16
+    }
+
+    /// Takes the captured frame and moves on to the next one.
+    pub fn deliver(&mut self, img: egui::ColorImage) {
+        self.writing.fetch_add(1, Ordering::Relaxed);
+        let _ = self.frames.send((self.frame, img));
+        self.frame += 1;
     }
 
     /// Pointer events for the simulated pointer since the last frame.
