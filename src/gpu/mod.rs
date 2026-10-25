@@ -1563,8 +1563,9 @@ mod tests {
             diffraction::KernelKey::new(120, 80, 8, &iris, stop_r, n_w, s.sensor_w / 120.0)
         };
         let want = key(&g);
-        // Generous: the other tests keep every core busy.
-        for _ in 0..3000 {
+        // Generous: the kernels share the thread pool with the other tests,
+        // which can hold it for most of the suite.
+        for _ in 0..12000 {
             assert!(g.resolve(true).unwrap(), "a frame without diffraction");
             if g.diffraction.as_ref().unwrap().is_configured(&want) {
                 return;
