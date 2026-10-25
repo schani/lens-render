@@ -407,12 +407,12 @@ fn texel(off: u32, w: u32, x: u32, y: u32) -> vec3<f32> {
                      srgb_decode(f32((p >> 16u) & 0xffu) / 255.0));
 }
 
-fn chart(u: f32, v: f32, aspect: f32) -> vec3<f32> {
+fn chart(u: f32, v: f32, aspect: f32, stars: f32) -> vec3<f32> {
     let white = vec3<f32>(0.85);
     let black = vec3<f32>(0.02);
     let x = u * aspect;
     let y = v;
-    let r_star = 0.075;
+    let r_star = 0.075 * stars;
     let m = 0.08 * max(aspect, 1.0);
     let sxs = array<f32, 3>(m, aspect * 0.5, aspect - m);
     let sys = array<f32, 3>(0.12, 0.5, 0.88);
@@ -481,7 +481,7 @@ fn texture_eval(b: u32, u: f32, v: f32) -> vec3<f32> {
             if (abs(cu - round(cu)) < p1 * 0.5 || abs(cv - round(cv)) < p1 * 0.5) { return vec3<f32>(0.02); }
             return vec3<f32>(0.85);
         }
-        case 4u: { return chart(u, v, aspect); }
+        case 4u: { return chart(u, v, aspect, p0); }
         default: {
             // Noise: fBm over a palette.
             var amp = 0.5;

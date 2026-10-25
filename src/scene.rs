@@ -178,7 +178,11 @@ pub enum TextureCfg {
         #[serde(default = "d_line_width")]
         width: f64,
     },
-    Chart,
+    /// `stars` scales the Siemens stars.
+    Chart {
+        #[serde(default = "d_one")]
+        stars: f64,
+    },
     Noise {
         scale: f64,
         palette: Vec<[f64; 3]>,
@@ -202,7 +206,7 @@ pub enum Texture {
     Image { w: usize, h: usize, data: Vec<[f32; 3]> },
     Checker { n: f64, a: [f32; 3], b: [f32; 3] },
     Grid { lines: f64, width: f64 },
-    Chart,
+    Chart { stars: f64 },
     Noise { scale: f64, palette: Vec<[f32; 3]>, seed: u32 },
 }
 
@@ -265,7 +269,7 @@ impl Texture {
                 let dv = (cv - cv.round()).abs();
                 if du < width / 2.0 || dv < width / 2.0 { [0.02, 0.02, 0.02] } else { [0.85, 0.85, 0.85] }
             }
-            Texture::Chart => chart(u, v, aspect),
+            Texture::Chart { stars } => chart(u, v, aspect, *stars),
             Texture::Noise { scale, palette, seed } => {
                 let mut amp = 0.5;
                 let mut f = 1.0;
@@ -286,13 +290,13 @@ impl Texture {
 }
 
 /// Test chart: line grid, Siemens stars and a slanted black square.
-fn chart(u: f64, v: f64, aspect: f64) -> [f32; 3] {
+fn chart(u: f64, v: f64, aspect: f64, stars: f64) -> [f32; 3] {
     const WHITE: [f32; 3] = [0.85, 0.85, 0.85];
     const BLACK: [f32; 3] = [0.02, 0.02, 0.02];
     let x = u * aspect; // square units, height = 1
     let y = v;
     // Siemens stars.
-    let r_star = 0.075;
+    let r_star = 0.075 * stars;
     for sx in [0.08 * aspect.max(1.0), aspect * 0.5, aspect - 0.08 * aspect.max(1.0)] {
         for sy in [0.12, 0.5, 0.88] {
             let dx = x - sx;
@@ -418,7 +422,7 @@ impl Scene {
                         TextureCfg::Color { rgb } => Texture::Color(f3(*rgb)),
                         TextureCfg::Checker { n, a, b } => Texture::Checker { n: *n as f64, a: f3(*a), b: f3(*b) },
                         TextureCfg::Grid { lines, width } => Texture::Grid { lines: *lines as f64, width: *width },
-                        TextureCfg::Chart => Texture::Chart,
+                        TextureCfg::Chart { stars } => Texture::Chart { stars: *stars },
                         TextureCfg::Noise { scale, palette, seed } => {
                             Texture::Noise { scale: *scale, palette: palette.iter().map(|c| f3(*c)).collect(), seed: *seed }
                         }

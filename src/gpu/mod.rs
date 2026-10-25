@@ -577,7 +577,7 @@ impl GpuRenderer {
                 }
                 Texture::Checker { n, a, b } => (2, *n, 0.0, *a, *b, [0, 0, 0]),
                 Texture::Grid { lines, width } => (3, *lines, *width, [0.0; 3], [0.0; 3], [0, 0, 0]),
-                Texture::Chart => (4, 0.0, 0.0, [0.0; 3], [0.0; 3], [0, 0, 0]),
+                Texture::Chart { stars } => (4, *stars, 0.0, [0.0; 3], [0.0; 3], [0, 0, 0]),
                 Texture::Noise { scale, palette, seed } => {
                     let off = (palettes.len() / 3) as u32;
                     palettes.extend(palette.iter().flat_map(|c| c.iter().copied()));
@@ -1210,7 +1210,7 @@ mod tests {
             n: Vec3::new(0.0, 0.0, 1.0),
             w: size * 1.5,
             h: size,
-            texture: Texture::Chart,
+            texture: Texture::Chart { stars: 1.0 },
             brightness: 1.0,
         }
     }
