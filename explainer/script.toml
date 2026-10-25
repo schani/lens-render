@@ -36,8 +36,9 @@
 #
 # Positions in the lesson scene (render coordinates): centre light
 # [0.562, 0.5], centre star [0.5, 0.5], 0.7-field light [0.85, 0.15], corner
-# light [0.098, 0.92], corner star [0.036, 0.92]. In both insets the star is
-# at [0.236, 0.5] and the light at [0.765, 0.5].
+# light [0.098, 0.92], corner stars [0.036, 0.92] and [0.964, 0.92]. In the
+# centre inset the star is at [0.236, 0.5] and the light at [0.765, 0.5]; the
+# corner inset shows the bottom-right star alone, at [0.765, 0.5].
 #
 # Every number spoken was checked against lenses/explainer/README.md and the
 # scoreboard (metrics::scoreboard).
@@ -160,6 +161,8 @@ diagram = true
 at = "@sensor"
 hud = true
 insets = true
+# The corner inset shows a star alone: a light there would be a huge blob.
+corner = [0.933, 0.92]
 
 [[chapter.key]]
 at = "@seven-0.2"
