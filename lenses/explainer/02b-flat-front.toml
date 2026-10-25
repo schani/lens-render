@@ -1,0 +1,16 @@
+# Plano-convex singlet, flat side towards the object: the bad end of the bending sweep.
+name = "Explainer 2b: flat-front N-BK7 singlet 50mm f/4"
+header = """
+Explainer #2b: the singlet of #1 bent the wrong way: plano-convex with the
+flat side towards the object, f/4.
+Role: the worse end of the bending sweep (#1 -> flat front -> #2).
+Design: front flat, rear curvature scaled to EFL 50 mm.
+Rows match 01-singlet and 02-best-form."""
+output = "02b-flat-front.lens"
+fstop = 4
+fields = [0.0, 0.7, 1.0]
+start = """
+stop     0.5   air     6.25
+ inf     2.5   N-BK7   7
+-25.9    48    air     7
+"""

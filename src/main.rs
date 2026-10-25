@@ -11,7 +11,9 @@ mod lens;
 mod lensedit;
 mod lensview;
 mod math;
+mod metrics;
 mod mtf;
+mod optimize;
 mod plot;
 mod psf;
 mod psfbank;
@@ -93,6 +95,30 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Optimise a lens as a job file (TOML) describes and write the result.
+    Optimize { job: String },
+    /// Print summary numbers (Seidel, spots, distortion, …) of lenses focused at a distance.
+    Numbers {
+        /// Lens files with their f-numbers: `<lens>@<f-number>` (`max`: wide open).
+        lenses: Vec<String>,
+        /// Focus distance in m.
+        #[arg(long, default_value_t = 2.5)]
+        focus: f64,
+        /// Also write the numbers as JSON.
+        #[arg(long)]
+        json: Option<String>,
+    },
+    /// Write the spherical aberration of a singlet against its bending as JSON.
+    Bending {
+        lens: String,
+        #[arg(long, default_value_t = 4.0)]
+        fstop: f64,
+        /// Focus distance in m.
+        #[arg(long, default_value_t = 2.5)]
+        focus: f64,
+        #[arg(long, default_value = "bending.json")]
+        out: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -118,6 +144,28 @@ fn main() -> Result<()> {
                 None => None,
             };
             print!("{}", mtf::run(&lens, &fstops, blades.unwrap_or(lens.blades), focus.map(|f| f * 1000.0), half_diag, reference.as_ref(), &out)?);
+        }
+        Cmd::Optimize { job } => optimize::run(&job)?,
+        Cmd::Numbers { lenses, focus, json } => {
+            let mut all = Vec::new();
+            for spec in &lenses {
+                let Some((path, f)) = spec.rsplit_once('@') else { bail!("expected <lens>@<f-number>: {spec}") };
+                let lens = lens::Lens::load(path)?;
+                let f = if f == "max" { lens.max_aperture() } else { f.parse()? };
+                all.push(metrics::numbers(&lens, f, focus * 1000.0)?);
+            }
+            print!("{}", metrics::table(&all));
+            if let Some(p) = json {
+                std::fs::write(p, serde_json::to_string_pretty(&all)?)?;
+            }
+        }
+        Cmd::Bending { lens, fstop, focus, out } => {
+            let b = metrics::bending(&lens::Lens::load(&lens)?, fstop, focus * 1000.0)?;
+            std::fs::write(&out, serde_json::to_string_pretty(&b)?)?;
+            eprintln!(
+                "best form at shape {:.3}; equiconvex / best: W040 {:.2}, RMS (546 nm) {:.2}; flat front / best: W040 {:.2}, RMS {:.2}",
+                b.best.shape, b.ratio_w040_equiconvex, b.ratio_rms_mono_equiconvex, b.ratio_w040_flat_front, b.ratio_rms_mono_flat_front
+            );
         }
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {

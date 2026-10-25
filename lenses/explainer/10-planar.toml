@@ -1,0 +1,40 @@
+# Planar type (Rudolph 1896): symmetric, outer singlets, inner thick cemented menisci.
+name = "Explainer 10: Planar type 50mm f/2.8"
+header = """
+Explainer #10: Planar type (Paul Rudolph, Zeiss 1896), symmetric: on each
+side of the stop a positive N-SK16 meniscus outside and a thick cemented
+meniscus doublet inside (positive N-SK16 + negative F2), concave towards
+the stop. N-SK16 and F2 have the same index (1.620), so the buried
+cemented surface bends only colour, not the monochromatic rays.
+Role: the buried cemented surfaces correct colour.
+Design: the front half's curvatures, thicknesses and spacings vary,
+mirrored to the rear half (EFL 50 mm, stop gaps >= 3 mm), minimising the
+white-light RMS spot at 0 (double weight), 0.5, 0.7 and 1.0 of the field,
+object at 2.5 m; vignetting towards the corner up to half the light.
+Start: an earlier run of this job from lenses/double-gauss.lens made
+symmetric."""
+output = "10-planar.lens"
+fstop = 2.8
+symmetric = true
+curvatures = [1, 2, 3, 4, 5]
+thicknesses = [1, 2, 3, 4, 5]
+vignetting = 0.5
+restarts = 20
+restart_scale = 0.1
+# Room for an iris between the halves.
+thickness_limits = [[5, 3, 100]]
+# The centre counts double.
+field_weights = [2, 1, 1, 1]
+start = """
+27.8813     2.4151      N-SK16         10.510
+86.6037     0.0996      air            10.260
+12.9424     2.8589      N-SK16         8.690
+26.1429     1.4995      F2             8.110
+10.4446     6.4652      air            7.100
+stop        6.4652      air            6.326
+-10.4446    1.4995      F2             7.650
+-26.1429    2.8589      N-SK16         8.100
+-12.9424    0.0996      air            8.660
+-86.6037    2.4151      N-SK16         9.930
+-27.8813    40.0000     air            10.240
+"""

@@ -24,6 +24,9 @@ Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
   elements, four aspheres. Matches the patent's focal lengths, back focus and
   F-number at all three zoom positions; semi-diameters are derived. Notes:
   `lenses/canon-24-70-f2.8l-ii.md`.
+- `explainer/`: eleven 50 mm designs from one lens to the double Gauss,
+  made with `lens-render optimize` (damped least squares on real-ray spot
+  sizes); numbers and notes in `lenses/explainer/README.md`.
 
 ## What is simulated
 

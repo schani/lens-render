@@ -1,0 +1,34 @@
+# Double Gauss f/2 with catalogue glasses: an alternative to lenses/double-gauss.lens.
+name = "Explainer 11b: double Gauss 50mm f/2"
+header = """
+Explainer #11b: six-element double Gauss, f/2, catalogue glasses (N-LAK9
+crowns, N-SF5 flints), two cemented doublets around the stop. An
+alternative to lenses/double-gauss.lens, whose Abbe numbers are assumed
+(its C-F focus shift is 2.4x the triplet's).
+Role: tuning the two halves separately makes f/2 sharp.
+Design: started from lenses/double-gauss.lens; all curvatures,
+thicknesses and spacings vary (EFL 50 mm, stop gaps >= 2 mm), minimising
+the white-light RMS spot at 0, 0.5, 0.7 and 1.0 of the field, object at
+2.5 m; vignetting towards the corner up to half the light."""
+output = "11b-double-gauss.lens"
+fstop = 2
+vignetting = 0.5
+restarts = 30
+restart_scale = 0.1
+curvatures = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
+thicknesses = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+# Room for an iris.
+thickness_limits = [[5, 2, 100], [6, 2, 100]]
+start = """
+  29.475      3.76        N-LAK9         12.6
+  84.83       0.12        air            12.6
+  19.275      4.025       N-LAK9         11.5
+  40.77       3.275       N-SF5          11.5
+  12.75       5.705       air             9.0
+  stop        4.5         air             8.55
+ -14.495      1.5         N-SF5           8.5
+  40.77       6.065       N-LAK9         10.0
+ -20.385      0.19        air            10.0
+  437.065     3.22        N-LAK9         10.0
+ -39.73       40.0        air            10.0
+"""

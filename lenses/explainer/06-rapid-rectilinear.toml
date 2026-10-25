@@ -1,0 +1,32 @@
+# Rapid Rectilinear: two identical achromatic menisci symmetric about the stop.
+name = "Explainer 6: Rapid Rectilinear 50mm f/8"
+header = """
+Explainer #6: Rapid Rectilinear (Dallmeyer / Steinheil 1866): two
+identical cemented achromatic menisci (negative F2 flint outside,
+positive N-BK7 crown inside), symmetric about the stop, f/8.
+Role: symmetry cancels distortion and lateral colour (coma in part); the curved
+field (Petzval) remains.
+Design: the front half's curvatures, thicknesses and stop distance vary,
+mirrored to the rear half (EFL 50 mm; stop gaps >= 3 mm), minimising
+the white-light RMS spot at 0, 0.5, 0.7 and 1.0 of the field, object at
+2.5 m."""
+output = "06-rapid-rectilinear.lens"
+fstop = 8
+symmetric = true
+curvatures = [1, 2, 3]
+thicknesses = [1, 2, 3]
+vignetting = 0.2
+max_glass = 6
+restarts = 10
+restart_scale = 0.1
+# Room for an iris between the halves.
+thickness_limits = [[3, 3, 100]]
+start = """
+ 25      2     F2      8
+ 14      3     N-BK7   8
+ 60      8     air     8
+ stop    8     air     3
+-60      3     N-BK7   8
+-14      2     F2      8
+-25      40    air     8
+"""
