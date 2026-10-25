@@ -7,7 +7,6 @@ use crate::lens::Lens;
 use crate::math::{Ray, Vec3};
 use crate::psf::{Source, chief_aim, chief_image, field_for_height, meridional_fan};
 use crate::scene::{Scene, Texture};
-use crate::seidel::{LAMBDA_W, Seidel, seidel};
 
 /// Wavelengths (nm) for polychromatic blur, weighted by luminance.
 const SPOT_WAVELENGTHS: [f64; 7] = [440.0, 480.0, 520.0, 555.0, 590.0, 630.0, 670.0];
@@ -35,20 +34,6 @@ pub fn morph(a: &Lens, b: &Lens, t: f64) -> Lens {
         z += s.thickness;
     }
     l
-}
-
-/// Stand-in for `seidel::transverse_um`: third-order blur (µm) each Seidel
-/// term alone causes at f-number `n`: the RMS radius of the transverse ray
-/// errors 2Nλ ∇W over the pupil, refocused where that helps (spherical,
-/// astigmatism, axial colour between its ends); field curvature is the
-/// medial one, W220P + W222/2; distortion and lateral colour are image
-/// shifts. TODO: replace with the real one.
-pub fn transverse_um(s: &Seidel, n: f64) -> [f64; 7] {
-    const SLOPE: [f64; 7] = [0.8165, 0.8165, 0.7071, 1.4142, 1.0, 0.7071, 1.0];
-    let k = 2.0 * n * LAMBDA_W * 1e-3;
-    let mut w = s.sum;
-    w[3] += 0.5 * w[2];
-    std::array::from_fn(|i| (k * SLOPE[i] * w[i]).abs())
 }
 
 /// Fraction of the paraxial entrance pupil the real marginal ray of an
@@ -139,15 +124,10 @@ fn rms(rays: &[(Ray, f64)], z: f64) -> f64 {
     (pts.iter().map(|p| p.2 * ((p.0 - cx).powi(2) + (p.1 - cy).powi(2))).sum::<f64>() / w).sqrt()
 }
 
-/// Polychromatic RMS spot radius (µm) on the sensor at image height `h`.
-pub fn spot_um(lens: &Lens, object: Option<f64>, h: f64) -> f64 {
-    rms(&bundle(lens, object, h, 24, &SPOT_WAVELENGTHS), lens.sensor_z) * 1000.0
-}
-
 /// Sensor shift (mm) from its position that minimises the RMS blur at image height `h`.
 pub fn best_offset(lens: &Lens, object: Option<f64>, h: f64) -> f64 {
     let rays = bundle(lens, object, h, 16, &SPOT_WAVELENGTHS);
-    let (mut a, mut b) = (-4.0, 4.0);
+    let (mut a, mut b) = (-12.0, 12.0);
     let g = 0.5 * (5f64.sqrt() - 1.0);
     for _ in 0..50 {
         let (c, d) = (b - g * (b - a), a + g * (b - a));
@@ -158,14 +138,6 @@ pub fn best_offset(lens: &Lens, object: Option<f64>, h: f64) -> f64 {
         }
     }
     0.5 * (a + b)
-}
-
-/// Third-order aberrations at full field (`half_diag`) as blur on the sensor (µm).
-pub fn aberrations_um(lens: &Lens, object: Option<f64>, half_diag: f64, fstop: f64) -> [f64; 7] {
-    match field_for_height(lens, half_diag, object) {
-        Some(th) => transverse_um(&seidel(lens, th, object), fstop),
-        None => [f64::NAN; 7],
-    }
 }
 
 /// Plane minimising the spread of one coordinate of rays (x or y).

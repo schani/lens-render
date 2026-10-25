@@ -108,6 +108,99 @@ pub fn numbers(lens: &Lens, fstop: f64, dist: f64) -> Result<Numbers> {
     })
 }
 
+/// The explainer's scoreboard: the seven classic aberrations measured with
+/// real rays on the sensor of a set-up lens (f-number, focus and sensor
+/// position as rendered), object `dist` mm away. µm, distortion in %.
+/// Focus errors become the radius of the blur disc they cause, δ / 2N.
+pub struct Scoreboard {
+    /// Spherical (on-axis RMS at 546 nm); coma (corner, tangential:
+    /// mid-point of the rim rays from the chief ray); astigmatism (corner,
+    /// T and S foci Δz apart: blur at the medial focus, Δz / 4N); field
+    /// curvature (corner, medial focus δ from the sensor: δ / 2N);
+    /// distortion (corner, %, negative: barrel); axial colour (C and F
+    /// foci Δz apart, between them: Δz / 4N); lateral colour (corner F–C
+    /// chief-ray separation).
+    pub bars: [f64; 7],
+    /// White-light (F, e, C 1:2:1) RMS spot radius in the centre and the corner.
+    pub blur: [f64; 2],
+}
+
+const E_LINE: f64 = 546.07;
+
+/// Tangential fan of the corner point at 546 nm: (pupil fraction, sensor height)
+/// of the rays that pass, from −1.5 to 1.5 times the paraxial pupil radius.
+fn corner_fan(lens: &Lens, src: &Source) -> Vec<(f64, f64)> {
+    let Some(q) = chief_aim(lens, src, E_LINE) else { return Vec::new() };
+    let par = lens.paraxial_data(LAMBDA_D);
+    let r = lens.iris.max_radius / par.entrance_pupil_mag;
+    let m = lens.media(E_LINE);
+    (0..=600)
+        .filter_map(|k| {
+            let u = 1.5 * (k as f64 / 300.0 - 1.0);
+            let (out, _) = lens.trace_forward(src.ray_through(q + Vec3::new(0.0, u * r, 0.0)).0, E_LINE, &m)?;
+            Some((u, out.o.y + out.d.y * (lens.sensor_z - out.o.z) / out.d.z))
+        })
+        .collect()
+}
+
+/// Real-ray tangential and sagittal foci (z) of a narrow bundle around the chief ray.
+fn ts_foci(lens: &Lens, src: &Source) -> Option<(f64, f64)> {
+    let q = chief_aim(lens, src, E_LINE)?;
+    let r = 0.25 * lens.iris.max_radius / lens.paraxial_data(LAMBDA_D).entrance_pupil_mag;
+    let m = lens.media(E_LINE);
+    // z where a pair of rays symmetric about the chief ray cross, in y (T) or x (S).
+    let cross = |d: Vec3, y: bool| -> Option<f64> {
+        let a = lens.trace_forward(src.ray_through(q + d).0, E_LINE, &m)?.0;
+        let b = lens.trace_forward(src.ray_through(q - d).0, E_LINE, &m)?.0;
+        let (pa, sa, pb, sb) = if y { (a.o.y, a.d.y / a.d.z, b.o.y, b.d.y / b.d.z) } else { (a.o.x, a.d.x / a.d.z, b.o.x, b.d.x / b.d.z) };
+        let (pa, pb) = (pa - sa * a.o.z, pb - sb * b.o.z);
+        Some((pb - pa) / (sa - sb))
+    };
+    // Narrower pairs where vignetting cuts the wider ones.
+    let at = |y: bool| [1.0, 0.5, 0.2].iter().find_map(|f| cross(if y { Vec3::new(0.0, f * r, 0.0) } else { Vec3::new(f * r, 0.0, 0.0) }, y));
+    Some((at(true)?, at(false)?))
+}
+
+pub fn scoreboard(lens: &Lens, dist: f64) -> Scoreboard {
+    let n_w = lens.working_fnumber();
+    let blur_um = |dz: f64| dz.abs() / (2.0 * n_w) * 1000.0;
+    let spherical = rms_spot_um(lens, 0.0, Some(dist), &[(E_LINE, 1.0)], Some(lens.sensor_z)).unwrap_or(f64::NAN);
+    let th = field_for_height(lens, HALF_DIAG, Some(dist));
+    let src = th.map(|th| Source::at_field(lens, th, Some(dist)));
+    let coma = src.as_ref().map_or(f64::NAN, |src| {
+        let fan = corner_fan(lens, src);
+        // The rays that pass on either side of the chief ray, without gaps.
+        let chief = fan.iter().min_by(|a, b| a.0.abs().total_cmp(&b.0.abs())).copied();
+        match (chief, fan.first(), fan.last()) {
+            (Some((u0, y0)), Some(lo), Some(hi)) if u0.abs() < 0.01 => ((lo.1 + hi.1) / 2.0 - y0).abs() * 1000.0,
+            _ => f64::NAN,
+        }
+    });
+    let (astigmatism, curvature) = match src.as_ref().and_then(|src| ts_foci(lens, src)) {
+        Some((zt, zs)) => (blur_um(zt - zs) / 2.0, blur_um((zt + zs) / 2.0 - lens.sensor_z)),
+        None => (f64::NAN, f64::NAN),
+    };
+    let distortion = match (paraxial_scale(lens, dist), th) {
+        (Some(k), Some(th)) => (HALF_DIAG / (k * th.tan()) - 1.0) * 100.0,
+        _ => f64::NAN,
+    };
+    let axial = blur_um(lens.paraxial_focus(Some(dist), LAMBDA_C) - lens.paraxial_focus(Some(dist), LAMBDA_F)) / 2.0;
+    let lateral = src.as_ref().map_or(f64::NAN, |src| {
+        let y = |l: f64| -> Option<f64> {
+            let m = lens.media(l);
+            let q = chief_aim(lens, src, l)?;
+            let (out, _) = lens.trace_forward(src.ray_through(q).0, l, &m)?;
+            Some(out.o.y + out.d.y * (lens.sensor_z - out.o.z) / out.d.z)
+        };
+        match (y(LAMBDA_F), y(LAMBDA_C)) {
+            (Some(f), Some(c)) => (f - c).abs() * 1000.0,
+            _ => f64::NAN,
+        }
+    });
+    let blur = [0.0, HALF_DIAG].map(|h| rms_spot_um(lens, h, Some(dist), &SPOT_WAVELENGTHS, Some(lens.sensor_z)).unwrap_or(f64::NAN));
+    Scoreboard { bars: [spherical, coma, astigmatism, curvature, distortion, axial, lateral], blur }
+}
+
 /// Markdown table of the numbers.
 pub fn table(all: &[Numbers]) -> String {
     let mut t = String::from(
@@ -211,4 +304,37 @@ pub fn bending(lens: &Lens, fstop: f64, dist: f64) -> Result<Bending> {
         flat_front,
         best,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup(text: &str, fstop: f64) -> Lens {
+        let mut l = Lens::parse(text).unwrap();
+        l.sensor_half = (18.0, 12.0);
+        l.prepare(fstop, 0, 0.0, 0.0, Some(2500.0), 0.0).unwrap();
+        l
+    }
+
+    /// The singlet is bad everywhere; the landscape lens's corners are sharp
+    /// but its grid bows (barrel); stopping down shrinks the blur but not
+    /// the distortion.
+    #[test]
+    fn scoreboard_tells_the_story() {
+        let singlet = scoreboard(&setup(include_str!("../lenses/explainer/01-singlet.lens"), 4.0), 2500.0);
+        let landscape = scoreboard(&setup(include_str!("../lenses/explainer/05-landscape.lens"), 14.0), 2500.0);
+        let b = &singlet.bars;
+        assert!(b[0] > 10.0 && b[2] > 200.0 && b[3] > 200.0 && b[5] > 20.0, "singlet {b:?}");
+        // Axial colour: C–F 0.8 mm at f/4.
+        assert!((b[5] - 798.0 / 16.0).abs() < 3.0, "axial colour {}", b[5]);
+        let l = &landscape.bars;
+        assert!((l[4] + 3.6).abs() < 0.2, "landscape distortion {}", l[4]);
+        // Its corner blur is mostly astigmatism.
+        assert!(l[5] < 5.0 && l[3] < 10.0 && (l[2] / landscape.blur[1] - 1.4).abs() < 0.2, "landscape {l:?} {:?}", landscape.blur);
+        let stopped = scoreboard(&setup(include_str!("../lenses/explainer/02-best-form.lens"), 16.0), 2500.0);
+        let open = scoreboard(&setup(include_str!("../lenses/explainer/02-best-form.lens"), 4.0), 2500.0);
+        assert!(stopped.bars[0] < open.bars[0] / 4.0 && stopped.blur[0] < 10.0, "{:?} {:?}", stopped.bars, stopped.blur);
+        assert!((stopped.bars[4] - open.bars[4]).abs() < 0.05);
+    }
 }

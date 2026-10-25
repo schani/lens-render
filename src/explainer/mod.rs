@@ -217,8 +217,8 @@ pub struct State {
     fields: Vec<f64>,
     rays: usize,
     by_wavelength: bool,
-    /// Element (0 = front) shown highlighted.
-    highlight: Option<usize>,
+    /// Glass pieces (0 = front) shown highlighted.
+    highlight: Vec<usize>,
     /// Focus zoom ranges (mm: half length along, half height across); 0 = auto.
     zoom_len: f64,
     zoom_height: f64,
@@ -254,7 +254,7 @@ impl Default for State {
             fields: vec![0.0],
             rays: 11,
             by_wavelength: false,
-            highlight: None,
+            highlight: Vec::new(),
             zoom_len: 0.0,
             zoom_height: 0.0,
             field_range: 0.0,
@@ -326,7 +326,10 @@ impl State {
                 "fields" => self.fields = v.as_array().map(|a| a.iter().filter_map(num).collect()).unwrap_or_default(),
                 "rays" => self.rays = num(v).map_or(self.rays, |n| n as usize),
                 "by_wavelength" => self.by_wavelength = v.as_bool().unwrap_or(false),
-                "highlight" => self.highlight = num(v).filter(|n| *n >= 0.0).map(|n| n as usize),
+                "highlight" => {
+                    let all: Vec<f64> = v.as_array().map_or_else(|| num(v).into_iter().collect(), |a| a.iter().filter_map(num).collect());
+                    self.highlight = all.into_iter().filter(|n| *n >= 0.0).map(|n| n as usize).collect();
+                }
                 "scene" | "lens" => {
                     let Some(to) = v.as_str().map(String::from) else { continue };
                     if name == "lens" && morph {
@@ -365,9 +368,8 @@ pub struct Optics {
     /// Ray fans per field; the axial fan with more rays for the focus zoom.
     fans: Vec<(f64, Vec<optics::RayPath>)>,
     axial: Vec<optics::RayPath>,
-    aberrations: [f64; 7],
-    /// Measured RMS blur (µm) in the centre and the corner.
-    blur: [f64; 2],
+    /// The scoreboard (`metrics::scoreboard`).
+    score: crate::metrics::Scoreboard,
     curves: Vec<[f64; 4]>,
     shape: Option<f64>,
     grid: Vec<[[f32; 2]; 2]>,
@@ -572,8 +574,7 @@ impl Explainer {
         let o = Optics {
             axial: optics::fan(&lens, object, 0.0, hd, 25, &optics::RGB_WAVELENGTHS, z_start),
             fans,
-            aberrations: optics::aberrations_um(&lens, object, hd, fstop),
-            blur: [optics::spot_um(&lens, object, 0.0), optics::spot_um(&lens, object, 0.9 * hd)],
+            score: crate::metrics::scoreboard(&lens, object.unwrap_or(f64::INFINITY)),
             curves: optics::field_curves(&lens, object, hd),
             shape: optics::shape_factor(&lens),
             grid: optics::ideal_grid(&lens, &self.scenes[&k.scene].1, (c.sensor_width_mm, c.sensor_height_mm)),

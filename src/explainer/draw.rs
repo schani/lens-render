@@ -30,9 +30,12 @@ const RGB: [Color32; 3] = [Color32::from_rgb(90, 140, 255), Color32::from_rgb(90
 const T_COLOR: Color32 = Color32::from_rgb(255, 138, 101);
 const S_COLOR: Color32 = Color32::from_rgb(77, 208, 225);
 const P_COLOR: Color32 = Color32::from_rgb(190, 170, 255);
-/// Scoreboard thresholds (µm): green up to the first, amber up to the second.
-const GOOD: f64 = 15.0;
+/// Scoreboard thresholds (µm): green up to the first, amber up to the second;
+/// distortion (%) has its own.
+const GOOD: f64 = 20.0;
 const FAIR: f64 = 60.0;
+const GOOD_PCT: f64 = 1.0;
+const FAIR_PCT: f64 = 2.5;
 /// Special views and their titles.
 const VIEWS: [(&str, &str); 3] = [("focus_zoom", "Near the focus"), ("field_curves", "Where the image is sharp"), ("bending", "Spherical aberration vs. shape")];
 const ROWS: [&str; 7] = ["spherical", "coma", "astigmatism", "field curvature", "distortion", "axial colour", "lateral colour"];
@@ -148,8 +151,8 @@ fn pill(p: &Painter, pos: Pos2, anchor: Align2, text: &str, font: FontId, color:
     r
 }
 
-/// Colour of a blur (µm) on the scoreboard.
-fn grade(v: f64) -> Color32 {
+/// Colour of a value on the scoreboard with thresholds `good` and `fair`.
+fn grade(v: f64, good: f64, fair: f64) -> Color32 {
     let mix = |a: Color32, b: Color32, t: f64| {
         let t = t.clamp(0.0, 1.0) as f32;
         Color32::from_rgb(
@@ -160,8 +163,8 @@ fn grade(v: f64) -> Color32 {
     };
     // Blend over ±10 % around the thresholds so animated bars don't flash.
     let l = v.max(1e-3).ln();
-    let t1 = (l - GOOD.ln()) / 0.2 + 0.5;
-    let t2 = (l - FAIR.ln()) / 0.2 + 0.5;
+    let t1 = (l - good.ln()) / 0.2 + 0.5;
+    let t2 = (l - fair.ln()) / 0.2 + 0.5;
     if t2 > 0.0 { mix(AMBER, RED, t2) } else { mix(GREEN, AMBER, t1) }
 }
 
@@ -174,17 +177,12 @@ fn shutter(t: f64) -> String {
     format!("{s} s")
 }
 
-/// A bending curve file: `{"points": [[shape factor, W040], …]}`, or
-/// arrays under `shape_factor`/`x` and `w040`/`y`.
+/// The bending curve (lenses/explainer/bending.json, from `lens-render
+/// bending`): shape factor against the 546 nm RMS blur from spherical
+/// aberration alone (W040 if absent).
 pub fn bending_curve(v: &Value) -> Vec<[f64; 2]> {
-    if let Some(pts) = v.get("points").and_then(|p| p.as_array()) {
-        return pts.iter().filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?.abs()])).collect();
-    }
-    let arr = |keys: &[&str]| keys.iter().find_map(|k| v.get(*k).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_f64()).collect::<Vec<_>>()));
-    match (arr(&["shape_factor", "shape", "x"]), arr(&["w040", "W040", "y"])) {
-        (Some(x), Some(y)) => x.into_iter().zip(y).map(|(x, y)| [x, y.abs()]).collect(),
-        _ => Vec::new(),
-    }
+    let pts = v.get("points").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    pts.iter().filter_map(|p| Some([p.get("shape")?.as_f64()?, p.get("rms_mono_um").or_else(|| p.get("w040_waves"))?.as_f64()?.abs()])).collect()
 }
 
 /// Lens z and y (mm) to points in the cross-section.
@@ -262,7 +260,7 @@ impl Explainer {
         if a > 0.0 {
             let mut q = p.clone();
             q.multiply_opacity(a);
-            self.draw_scoreboard(&q, s, now);
+            self.draw_scoreboard(&q, s, now, &main);
         }
         let a = s.flag("hud").alpha(now, FADE);
         if a > 0.0 {
@@ -306,7 +304,12 @@ impl Explainer {
 
     /// Smooths the scoreboard's read-outs towards the lens shown.
     fn update_readouts(&mut self, o: &Optics) {
-        let target: [f64; 9] = std::array::from_fn(|i| if i < 7 { o.aberrations[i] } else { o.blur[i - 7] }.max(0.05).ln());
+        // Distortion (%) is drawn where 20 µm per 1 % would be.
+        let target: [f64; 9] = std::array::from_fn(|i| match i {
+            4 => (o.score.bars[4].abs() * GOOD).max(0.05).ln(),
+            i if i < 7 => o.score.bars[i].max(0.05).ln(),
+            i => o.score.blur[i - 7].max(0.05).ln(),
+        });
         let k = 1.0 - (-self.dt / 0.18).exp();
         let shown = self.shown.get_or_insert(target);
         for (v, t) in shown.iter_mut().zip(target) {
@@ -387,11 +390,11 @@ impl Explainer {
         }
     }
 
-    fn draw_scoreboard(&self, p: &Painter, s: &State, now: f64) {
+    fn draw_scoreboard(&self, p: &Painter, s: &State, now: f64, o: &Optics) {
         let r = score_rect();
         panel(p, r);
         p.text(r.left_top() + vec2(18.0, 12.0), Align2::LEFT_TOP, "Aberrations", bold(20.0), TEXT);
-        p.text(r.right_top() + vec2(-18.0, 18.0), Align2::RIGHT_TOP, "theory: third order, full field", regular(13.0), DIM);
+        p.text(r.right_top() + vec2(-18.0, 18.0), Align2::RIGHT_TOP, "measured by ray tracing, on the sensor", regular(13.0), DIM);
         let shown = self.shown.unwrap_or([0.0; 9]);
         let (x0, x1) = (r.left() + 168.0, r.right() - 84.0);
         let bar_x = |um: f64| x0 + (x1 - x0) * ((um.max(1.0).log10() / 3.0).min(1.0) as f32);
@@ -405,7 +408,7 @@ impl Explainer {
         }
         let sep = row_y(6) + row_h + 4.0;
         p.line_segment([pos2(r.left() + 18.0, sep), pos2(r.right() - 18.0, sep)], Stroke::new(1.0, EDGE));
-        p.text(pos2(r.left() + 18.0, sep + 4.0), Align2::LEFT_TOP, "measured by ray tracing: RMS blur radius", regular(13.0), DIM);
+        p.text(pos2(r.left() + 18.0, sep + 4.0), Align2::LEFT_TOP, "white-light blur, RMS radius", regular(13.0), DIM);
         let since = s.flag("scoreboard").since;
         for i in 0..9 {
             let y = row_y(i);
@@ -416,14 +419,20 @@ impl Explainer {
             let name = if i < 7 { ROWS[i] } else if i == 7 { "centre blur" } else { "corner blur" };
             q.text(pos2(r.left() + 18.0, y + row_h / 2.0), Align2::LEFT_CENTER, name, if i < 7 { regular(16.0) } else { medium(16.0) }, TEXT);
             let bar = Rect::from_min_max(pos2(x0, y + 5.0), pos2(bar_x(um).max(x0 + 3.0), y + row_h - 5.0));
-            let c = grade(um);
+            let c = if i == 4 { grade(um / GOOD, GOOD_PCT, FAIR_PCT) } else { grade(um, GOOD, FAIR) };
             if i < 7 {
                 q.rect_filled(bar, CornerRadius::same(3), c);
             } else {
                 q.rect(bar, CornerRadius::same(3), c.gamma_multiply(0.35), Stroke::new(1.5, c), StrokeKind::Inside);
             }
-            let value = if um < 9.95 { format!("{um:.1}") } else { format!("{um:.0}") };
-            q.text(pos2(r.right() - 18.0, y + row_h / 2.0), Align2::RIGHT_CENTER, format!("{value} µm"), medium(15.0), c);
+            let value = if i == 4 {
+                format!("{:+.1} %", o.score.bars[4].signum() * um / GOOD).replace('-', "−")
+            } else if um < 9.95 {
+                format!("{um:.1} µm")
+            } else {
+                format!("{um:.0} µm")
+            };
+            q.text(pos2(r.right() - 18.0, y + row_h / 2.0), Align2::RIGHT_CENTER, value, medium(15.0), c);
         }
     }
 
@@ -549,7 +558,7 @@ impl Explainer {
         }
         let (x0, x1) = (c.first().unwrap()[0], c.last().unwrap()[0]);
         let ymax = c.iter().map(|q| q[1]).fold(0.0, f64::max) * 1.1;
-        let plot = Rect::from_min_max(area.min + vec2(8.0, 18.0), area.max - vec2(8.0, 16.0));
+        let plot = Rect::from_min_max(area.min + vec2(30.0, 18.0), area.max - vec2(30.0, 16.0));
         let at = |x: f64, y: f64| pos2(plot.left() + ((x - x0) / (x1 - x0)) as f32 * plot.width(), plot.bottom() - (y / ymax) as f32 * plot.height());
         p.line_segment([plot.left_bottom(), plot.right_bottom()], Stroke::new(1.0, EDGE));
         p.add(Shape::line(c.iter().map(|q| at(q[0], q[1])).collect(), Stroke::new(2.5, TEXT)));
@@ -562,7 +571,7 @@ impl Explainer {
         }
         let best = c.iter().min_by(|a, b| a[1].total_cmp(&b[1])).unwrap();
         p.text(at(best[0], best[1]) - vec2(0.0, 14.0), Align2::CENTER_BOTTOM, "best form", medium(13.0), GREEN);
-        let w = p.text(plot.left_top() + vec2(12.0, -16.0), Align2::LEFT_TOP, "worse", regular(12.0), DIM);
+        let w = p.text(plot.left_top() + vec2(12.0, -16.0), Align2::LEFT_TOP, "blur from spherical aberration", regular(12.0), DIM);
         p.arrow(pos2(plot.left() + 4.0, w.bottom()), vec2(0.0, -w.height()), Stroke::new(1.0, DIM));
         if let Some(x) = o.shape.filter(|x| x.is_finite()) {
             let x = x.clamp(x0, x1);
@@ -626,7 +635,7 @@ impl Explainer {
             let mid = c + vec2(cell.x / 2.0, (cell.y - 48.0) / 2.0);
             let z_mid = 0.5 * (lens.surfaces[0].z + lens.last_z());
             let view = DiagramView { sensor: mid + vec2(((lens.sensor_z - z_mid) * scale) as f32, 0.0), sensor_z: lens.sensor_z, scale };
-            draw_elements(&q, &view, lens, None);
+            draw_elements(&q, &view, lens, &[]);
             q.text(c + vec2(cell.x / 2.0, cell.y - 46.0), Align2::CENTER_TOP, &e.label, regular(13.0), DIM);
             q.text(c + vec2(cell.x / 2.0, cell.y - 28.0), Align2::CENTER_TOP, &e.tool, medium(16.0), ACCENT);
         }
@@ -715,7 +724,7 @@ fn draw_hud(p: &Painter, s: &State, o: &Optics) {
 }
 
 /// Glass, stop and (optionally) a highlighted piece of glass (0 = front) of `lens`.
-fn draw_elements(p: &Painter, v: &DiagramView, lens: &crate::lens::Lens, highlight: Option<usize>) {
+fn draw_elements(p: &Painter, v: &DiagramView, lens: &crate::lens::Lens, highlight: &[usize]) {
     let n = 40;
     let surf = &lens.surfaces;
     let mut piece = 0;
@@ -724,7 +733,7 @@ fn draw_elements(p: &Painter, v: &DiagramView, lens: &crate::lens::Lens, highlig
             continue;
         }
         let t = &surf[i + 1];
-        let lit = highlight == Some(piece);
+        let lit = highlight.contains(&piece);
         piece += 1;
         let fill = if lit { ACCENT.gamma_multiply(0.55) } else { GLASS };
         let mut mesh = egui::Mesh::default();
@@ -779,7 +788,7 @@ fn draw_lens(p: &Painter, v: &DiagramView, o: &Optics, s: &State, now: f64, r: R
             p.add(mesh);
         }
     }
-    draw_elements(p, v, lens, s.highlight);
+    draw_elements(p, v, lens, &s.highlight);
     let fans = o.fans.iter().filter(|(f, _)| if s.by_wavelength { *f <= -1.0 } else { *f >= 0.0 });
     for (f, rays) in fans {
         let field = if *f <= -1.0 { -1.0 - f } else { *f };
