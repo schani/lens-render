@@ -280,7 +280,7 @@ impl Explainer {
                     pill(&l, r.center(), Align2::CENTER_CENTER, "corners: part 2", medium(17.0), TEXT, Color32::from_black_alpha(190));
                 }
                 q.rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, EDGE), StrokeKind::Inside);
-                let label = format!("{} ×{:.0}", if i == 0 { "center" } else { "corner" }, s.inset_zoom);
+                let label = format!("{} ×{:.0}", if i == 0 { "center" } else { s.corner_label.as_deref().unwrap_or("corner") }, s.inset_zoom);
                 pill(&q, r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &label, medium(14.0), TEXT, Color32::from_black_alpha(170));
                 // Where the inset comes from.
                 let mut q = q.clone();

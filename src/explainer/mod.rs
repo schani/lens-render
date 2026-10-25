@@ -220,6 +220,8 @@ pub struct State {
     /// Inset crop centres (normalised image coordinates) and magnification.
     insets: [[f64; 2]; 2],
     inset_zoom: f64,
+    /// What the corner inset shows, if not just "corner".
+    corner_label: Option<String>,
     /// Image heights (fractions of the half diagonal) of the ray fans.
     fields: Vec<f64>,
     rays: usize,
@@ -259,6 +261,7 @@ impl Default for State {
             spotlight: 0.0,
             insets: [[0.531, 0.5], [0.067, 0.92]],
             inset_zoom: 3.0,
+            corner_label: None,
             fields: vec![0.0],
             rays: 11,
             by_wavelength: false,
@@ -321,6 +324,7 @@ impl State {
                 "spotlight" => self.spotlight = num(v).map_or(self.spotlight, |b| lin(self.spotlight, b)),
                 "split_lens" => self.split_lens = v.as_str().map(String::from),
                 "split_fstop" => self.split_fstop = num(v),
+                "corner_label" => self.corner_label = v.as_str().filter(|l| !l.is_empty()).map(String::from),
                 "inset_zoom" => self.inset_zoom = num(v).map_or(self.inset_zoom, |b| lin(self.inset_zoom, b)),
                 "center" | "corner" => {
                     let i = (name == "corner") as usize;

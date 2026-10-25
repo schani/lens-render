@@ -26,7 +26,7 @@
 # "corner": focus the corners), ev, dim (1: darken when stopping down past
 # dim_ref; 0: exposure compensated by the shutter), split_lens, split
 # (divider position; 0 = no split), split_fstop, full (1: render fills the
-# screen), center / corner (inset crop centers), inset_zoom, fields (ray
+# screen), center / corner (inset crop centers), corner_label, inset_zoom, fields (ray
 # fans at these fractions of the image diagonal: 0, 0.7, 1), rays,
 # by_wavelength, highlight (glass pieces, 0 = front; -1 none), diagram_zoom
 # (magnification of the cross-section about the sensor), zoom_len /
@@ -442,10 +442,10 @@ The center is solved. Now, the corners."""
 lens = "achromat"
 fstop = 8
 dim = 0
-tail = 1.2
+tail = 3.2
 tool = "two glasses"
 part = "Part 2 · The corners"
-part_at = "@corners"
+part_at = "@corners+1.3"
 
 [[chapter.key]]
 at = "@corners"
@@ -514,6 +514,22 @@ tail = 1.6
 at = "@sharpest"
 field_curves = true
 
+[[chapter.key]]
+at = "@Light"
+dur = 0.8
+corner = [0.085, 0.92]
+corner_label = "corner light"
+
+[[chapter.note]]
+at = "@points"
+until = "@bowl"
+on = "corner"
+shape = "circle"
+pos = [0.61, 0.5]
+r = [0.17, 0.26]
+text = "one point of light"
+text_at = [0.3, 0.84]
+
 [[chapter.tag]]
 at = "@astigmatism"
 kind = "problem"
@@ -558,6 +574,12 @@ The price: it only works at f/14.
 Lenses like this photographed the world for decades."""
 tail = 1.2
 tool = "move the stop"
+
+[[chapter.key]]
+at = "@Each"
+dur = 0.8
+corner = [0.933, 0.92]
+corner_label = ""
 
 [[chapter.key]]
 at = "@aperture"
