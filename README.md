@@ -87,6 +87,10 @@ cargo build --release
 # Interactive viewer: progressive GPU rendering with live lens controls.
 ./target/release/lens-render view scenes/night.toml
 
+# Explainer video on lens design (script: explainer/script.toml; narration
+# needs ELEVENLABS_API_KEY in .env).
+scripts/explainer_video.py [--only hook,job]
+
 # Optical analysis: paraxial data, aberrations vs. field, spot diagrams, layout.
 ./target/release/lens-render analyze lenses/cooke-triplet.lens --out analysis
 
@@ -223,6 +227,7 @@ size = [1.5, 1.0]
 rotate = [0, 0, 0]                  # degrees about x, y, z
 brightness = 1.0
 texture = { kind = "chart" }        # chart | grid | checker | noise | color | image
+                                    # chart: `stars = 0.5` halves the Siemens stars
 
 [[object]]
 type = "light"                      # small spherical light

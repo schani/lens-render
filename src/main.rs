@@ -2,6 +2,7 @@ mod analysis;
 mod canvas;
 mod demo;
 mod diffraction;
+mod explainer;
 mod fieldpsf;
 mod footprint;
 mod ghosts;
@@ -12,6 +13,7 @@ mod lensedit;
 mod lensview;
 mod math;
 mod mtf;
+mod offscreen;
 mod plot;
 mod psf;
 mod psfbank;
@@ -55,6 +57,9 @@ enum Cmd {
         #[arg(long = "set")]
         overrides: Vec<String>,
     },
+    /// Record the explainer video's frames from `<dir>/timeline.json` (see
+    /// scripts/explainer_video.py) into `<dir>/frames`.
+    Explain { dir: String },
     /// Plot MTF curves (wave optics, white light) of a lens.
     Mtf {
         lens: String,
@@ -119,6 +124,7 @@ fn main() -> Result<()> {
             };
             print!("{}", mtf::run(&lens, &fstops, blades.unwrap_or(lens.blades), focus.map(|f| f * 1000.0), half_diag, reference.as_ref(), &out)?);
         }
+        Cmd::Explain { dir } => explainer::record(Path::new(&dir))?,
         Cmd::Render { scene, out, overrides, cpu } => render(&scene, &out, &overrides, cpu)?,
         Cmd::View { scene, overrides } => {
             let Setup { file, scene, lens_path, raw_lens, fstop, focus, .. } = setup(&scene, &overrides)?;
