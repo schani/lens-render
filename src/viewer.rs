@@ -23,6 +23,8 @@ const MAX_FRAMES: u32 = 1024;
 /// A demo frame is captured once the image has this many passes, so that it
 /// looks finished rather than freshly restarted after a change.
 const DEMO_PASSES: u32 = 32;
+/// Sensor reflectance with "sensor reflection" on: typical of real sensors.
+const SENSOR_REFLECTANCE: f64 = 0.05;
 
 #[derive(Clone, PartialEq)]
 struct Controls {
@@ -36,6 +38,7 @@ struct Controls {
     rotation: f64,
     coating: Coating,
     ghosts: bool,
+    sensor_reflection: bool,
     wave: bool,
     /// Counts prescription edits.
     revision: u32,
@@ -44,7 +47,7 @@ struct Controls {
 impl Controls {
     /// The settings a PSF bank depends on (coating and ghosts do not matter).
     fn bank_key(&self) -> Controls {
-        Controls { coating: Coating::None, ghosts: true, wave: true, ..self.clone() }
+        Controls { coating: Coating::None, ghosts: true, sensor_reflection: false, wave: true, ..self.clone() }
     }
 }
 
@@ -356,6 +359,7 @@ impl Viewer {
             rotation: c.iris_rotation_deg,
             coating: lens.coating,
             ghosts: c.ghosts,
+            sensor_reflection: c.sensor_reflectance > 0.0,
             wave: c.wave_optics,
             revision: 0,
         };
@@ -451,6 +455,8 @@ impl Viewer {
         let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
         lens.prepare(k.fstop, k.blades, k.rotation, k.curvature, focus, self.file.camera.focus_offset_mm)?;
         let c = &self.file.camera;
+        lens.sensor_reflectance = if k.sensor_reflection { SENSOR_REFLECTANCE } else { 0.0 };
+        lens.sensor_half = (c.sensor_width_mm / 2.0, c.sensor_height_mm / 2.0);
         let settings = gpu::Settings {
             w: k.width,
             h: self.height(),
@@ -582,6 +588,8 @@ impl Viewer {
             }
         });
         ui.checkbox(&mut k.ghosts, "ghosts and veiling glare");
+        ui.add_enabled(k.ghosts, egui::Checkbox::new(&mut k.sensor_reflection, "sensor reflection"))
+            .on_hover_text("ghosts of light reflected off the sensor (5 %) and back off a lens surface");
         ui.checkbox(&mut self.diffraction, "diffraction");
         ui.checkbox(&mut k.wave, "wave-optical PSFs");
         if let Some(job) = &self.bank_job {

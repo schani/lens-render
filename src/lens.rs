@@ -257,6 +257,11 @@ pub struct Lens {
     pub stop_index: usize,
     /// Sensor plane position.
     pub sensor_z: f64,
+    /// Specular reflectance of the sensor (cover glass, filters, microlenses),
+    /// the same at all wavelengths and angles; > 0 adds the sensor ghosts.
+    pub sensor_reflectance: f64,
+    /// Half width and height of the sensor (mm): its reflecting area.
+    pub sensor_half: (f64, f64),
     pub forward_path: Vec<Event>,
     pub backward_path: Vec<Event>,
     pub floating: Vec<FloatingGap>,
@@ -377,6 +382,8 @@ impl Lens {
             blade_curvature,
             stop_index,
             sensor_z: z,
+            sensor_reflectance: 0.0,
+            sensor_half: (18.0, 12.0),
             forward_path,
             backward_path,
             floating,
@@ -497,9 +504,14 @@ impl Lens {
         for ev in path {
             let Some((r, t, _)) = self.trace_path_opl(cur, l, &m, std::slice::from_ref(ev), false) else { return (pts, None) };
             pts.push(r.o);
-            let s = &self.surfaces[ev.surface as usize];
-            let (x, y) = (r.o.x - s.decenter.0, r.o.y - s.decenter.1);
-            if x * x + y * y > s.semi_diameter * s.semi_diameter || (s.is_stop && !self.iris.contains(x, y)) {
+            let blocked = match self.surfaces.get(ev.surface as usize) {
+                Some(s) => {
+                    let (x, y) = (r.o.x - s.decenter.0, r.o.y - s.decenter.1);
+                    x * x + y * y > s.semi_diameter * s.semi_diameter || (s.is_stop && !self.iris.contains(x, y))
+                }
+                None => !self.on_sensor(r.o.x, r.o.y),
+            };
+            if blocked {
                 return (pts, None);
             }
             throughput *= t;
@@ -761,6 +773,21 @@ impl Lens {
         let mut opl = 0.0;
         for ev in path {
             let i = ev.surface as usize;
+            if i == self.surfaces.len() {
+                // The sensor: a flat mirror over its area.
+                let t = (self.sensor_z - ray.o.z) / ray.d.z;
+                if ray.d.z <= 0.0 || t < 1e-9 {
+                    return None;
+                }
+                let p = ray.o + ray.d * t;
+                if clip && !self.on_sensor(p.x, p.y) {
+                    return None;
+                }
+                opl += m.n[i] * t;
+                throughput *= self.sensor_reflectance;
+                ray = Ray { o: p, d: Vec3::new(ray.d.x, ray.d.y, -ray.d.z) };
+                continue;
+            }
             let s = &self.surfaces[i];
             let (p, mut nrm) = self.intersect(i, &ray)?;
             let (n1, n2) = if ev.forward { (m.n[i], m.n[i + 1]) } else { (m.n[i + 1], m.n[i]) };
@@ -803,6 +830,10 @@ impl Lens {
         Some((ray, throughput, opl))
     }
 
+    fn on_sensor(&self, x: f64, y: f64) -> bool {
+        x.abs() <= self.sensor_half.0 && y.abs() <= self.sensor_half.1
+    }
+
     pub fn trace_forward(&self, ray: Ray, l: f64, m: &Media) -> Option<(Ray, f64)> {
         self.trace_path(ray, l, m, &self.forward_path)
     }
@@ -813,12 +844,15 @@ impl Lens {
 
     /// Event sequences for all two-reflection ghost paths: the light reflects
     /// first off surface `a` (travelling backwards) and then off surface `b < a`.
+    /// With a reflecting sensor, `a` may also be the sensor: `a == surfaces.len()`,
+    /// which is also its surface index in events.
     pub fn ghost_paths(&self) -> Vec<(usize, usize, Vec<Event>)> {
         let n = self.surfaces.len();
         let mut out = Vec::new();
-        for a in 0..n {
+        let last = if self.sensor_reflectance > 0.0 { n } else { n - 1 };
+        for a in 0..=last {
             for b in 0..a {
-                if self.surfaces[a].is_stop || self.surfaces[b].is_stop {
+                if (a < n && self.surfaces[a].is_stop) || self.surfaces[b].is_stop {
                     continue;
                 }
                 let mut p = Vec::new();

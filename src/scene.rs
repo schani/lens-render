@@ -80,6 +80,10 @@ pub struct CameraCfg {
     /// Ghosts are traced for lights with at least this fraction of the brightest light's power.
     #[serde(default = "d_ghost_threshold")]
     pub ghost_threshold: f64,
+    /// Reflectance of the sensor (real ones: ~0.05); > 0 adds ghosts of light
+    /// reflected off the sensor and back off a lens surface.
+    #[serde(default)]
+    pub sensor_reflectance: f64,
     #[serde(default = "d_bins")]
     pub spectral_bins: usize,
     /// "clip" or "filmic".

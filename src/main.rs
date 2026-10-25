@@ -158,6 +158,8 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     if c.coating != "lens" {
         lens.coating = lens::Coating::parse(&c.coating)?;
     }
+    lens.sensor_reflectance = c.sensor_reflectance;
+    lens.sensor_half = (c.sensor_width_mm / 2.0, c.sensor_height_mm / 2.0);
     for d in &c.decenter {
         lens.decenter_element(d[0] as usize, d[1], d[2])?;
     }

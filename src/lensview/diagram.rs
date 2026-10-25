@@ -371,8 +371,9 @@ impl Diagram {
             for path in g.fan.iter().step_by(2) {
                 painter.line(path.iter().map(|p| at(p.z, p.y)).collect(), Stroke::new(1.0, color.gamma_multiply(0.7)));
             }
+            let first = if g.a == shown.surfaces.len() { "the sensor".to_string() } else { format!("surfaces {}", g.a + 1) };
             legend.push((
-                format!("ghost off surfaces {} and {}: {:.3} % of the light, spread {:.1} mm", g.a + 1, g.b + 1, 100.0 * g.energy, g.spread),
+                format!("ghost off {first} and {}: {:.3} % of the light, spread {:.1} mm", g.b + 1, 100.0 * g.energy, g.spread),
                 color,
             ));
         }

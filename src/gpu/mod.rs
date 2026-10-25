@@ -93,7 +93,9 @@ struct Params {
     bank_dv: f32,
     bank_period: f32,
     coat_h: f32,
-    _pad: [u32; 3],
+    sensor_r: f32,
+    sensor_hw: f32,
+    sensor_hh: f32,
 }
 
 /// Device and queue, either our own (headless) or borrowed from the viewer.
@@ -814,7 +816,9 @@ impl GpuRenderer {
             bank_dv: bank.map_or(1.0, |b| b.dverg.max(1e-12) as f32),
             bank_period: bank.map_or(1.0, |b| b.period as f32),
             coat_h,
-            _pad: [0; 3],
+            sensor_r: lens.sensor_reflectance as f32,
+            sensor_hw: lens.sensor_half.0 as f32,
+            sensor_hh: lens.sensor_half.1 as f32,
         };
 
         self.static_bufs = Some(bufs);
@@ -1329,6 +1333,44 @@ mod tests {
         }
         println!("ghost pixel diff {}", diff / sum);
         assert!(diff / sum < 0.06);
+    }
+
+    /// Sensor ghosts alone (with minus without a reflecting sensor): total
+    /// energy, and per pixel with ray-grid cells several pixels wide. A fully
+    /// reflecting sensor keeps them well above the f32 rounding of the direct
+    /// image; a light near the axis keeps the CPU's ray grid converged.
+    #[test]
+    fn sensor_ghosts_match_cpu() {
+        if GpuContext::headless().is_err() {
+            return;
+        }
+        let light = Light { center: Vec3::new(150.0, 100.0, -5000.0), radius: 30.0, spectrum: LightSpectrum::Blackbody { t: 4000.0, scale: 1e-6 } };
+        let scene = Scene { rects: vec![], lights: vec![light], background: [0.0; 3] };
+        let cs = ColorSystem::new();
+        for (coating, grid, w, h) in [(Coating::None, 128, 120, 80), (Coating::MULTI, 128, 120, 80), (Coating::None, 32, 240, 160)] {
+            let off = Lens { coating, ..lens(4.0, Some(3000.0)) };
+            let on = Lens { sensor_reflectance: 1.0, ..off.clone() };
+            let bins = if coating == Coating::MULTI { 32 } else { 8 };
+            let mut s = settings(w, h, bins, true);
+            s.light_grid = grid;
+            let (g_on, g_off) = (gpu_film(&on, &scene, &s, 64).unwrap(), gpu_film(&off, &scene, &s, 64).unwrap());
+            let cpu = |lens: &Lens| {
+                let mut f = Film::new(w, h, bins);
+                crate::render::Renderer::new(lens, &scene, &cs, w, h, 36.0, bins, 1.0).render_lights(&mut f, 4_000_000, 256, 0.0, false);
+                f
+            };
+            let (c_on, c_off) = (cpu(&on), cpu(&off));
+            let (mut diff, mut sum) = (0.0, 0.0);
+            for i in 0..c_on.data.len() {
+                let c = (c_on.data[i] - c_off.data[i]) as f64;
+                diff += ((g_on.data[i] - g_off.data[i]) as f64 - c).abs();
+                sum += c;
+            }
+            let (gpu, cpu) = (total(&g_on) - total(&g_off), total(&c_on) - total(&c_off));
+            println!("sensor ghosts ({}, grid {grid}): gpu {gpu} cpu {cpu}, pixel diff {}", coating.name(), diff / sum);
+            assert!((gpu - cpu).abs() / cpu < 0.01);
+            assert!(diff / sum < 0.06);
+        }
     }
 
     #[test]
