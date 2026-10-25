@@ -21,8 +21,9 @@ fn stop_height(lens: &Lens, theta: f64, y0: f64, l: f64) -> Option<f64> {
 
 /// Entry height (at z = START_Z) of the real chief ray for field angle `theta`.
 pub fn chief_ray_y0(lens: &Lens, theta: f64, l: f64) -> f64 {
-    let mut a = 0.0;
-    let mut b = 0.5;
+    // Start from the paraxial chief ray (towards the entrance pupil).
+    let mut a = -(lens.paraxial_data(LAMBDA_D).entrance_pupil_z - START_Z) * theta.tan();
+    let mut b = a + 0.5;
     let mut fa = stop_height(lens, theta, a, l).unwrap_or(0.0);
     let mut fb = stop_height(lens, theta, b, l).unwrap_or(0.0);
     for _ in 0..40 {

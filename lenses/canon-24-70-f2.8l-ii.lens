@@ -1,0 +1,58 @@
+@name Canon EF 24-70mm f/2.8L II - US 8,736,971 ex. 3
+# Canon patent US 8,736,971 B2, numerical example 3 (https://patents.google.com/patent/US8736971B2/en).
+# Bill Claff's Optical Bench Hub lists this example as the EF 24-70mm f/2.8L II USM; it has that
+# lens' 18 elements in 13 groups (one Super UD, two UD, three aspherical elements).
+# Radii, spacings, nd/vd and aspheric coefficients are the patent's. Assumed (see the .md file):
+# - patent surface 16 (flat, 1.90 mm before the stop) dropped, its 1.90 mm added to d15; the stop
+#   sits 0.01 mm before surface 18 (patent: 0.00);
+# - semi-diameters: unvignetted f/2.91 axial and corner bundles over the zoom range, +0.3 mm,
+#   cut where neighbouring surfaces meet;
+# - Canon specifies 9 rounded blades; the blade curvature is a guess.
+@iris 9 0.8
+@coating multi
+# Patent focal lengths (wide, middle, tele), the variable gaps d5, d15, d24, d33 (back focus) and
+# the F-number at each (the stop opening follows it).
+@zoom 24.70 34.93 67.88
+@zoom-gap 5 2.75 11.72 30.30
+@zoom-gap 15 15.65 9.62 2.12
+@zoom-gap 23 8.79 4.80 0.74
+@zoom-gap 32 38.08 46.62 63.32
+@zoom-fnumber 2.91 2.91 2.91
+#
+# radius   thickness   material   semi-diameter
+# Group 1 (+105.87)
+  203.844    2.10   1.84666/23.9   38.8
+   72.022    7.41   1.77250/49.6   35.3
+  330.893    0.15   air            35.3
+   56.152    6.73   1.77250/49.6   32.5
+  146.214    2.75   air            32.5
+# Group 2 (-16.39)
+  108.833    1.60   1.88300/40.8   18.0  k=0 a4=7.24687e-6 a6=-9.33789e-9 a8=2.38226e-11 a10=-5.23831e-14 a12=8.03521e-17
+   16.535    7.96   air            12.8
+  -46.335    1.15   1.59522/67.7   12.8
+   21.502    4.18   1.88300/40.8   12.4
+   66.987    1.43   air            12.1
+  126.217    3.10   1.59270/35.3   11.9
+  -49.936    1.62   air            11.2
+  -23.459    1.15   1.72916/54.7   11.2
+  432.841    2.76   1.84666/23.9   12.5
+  -57.478   15.65   air            12.7
+# Group 3 (+58.01)
+  stop       0.01   air             9.52
+   27.563    1.45   1.88300/40.8   15.1
+   21.272   11.03   1.49700/81.5   14.8
+  -66.483    0.20   air            15.2
+   43.019    2.70   1.58313/59.4   15.4
+   63.198    4.67   air            14.8  k=0 a4=5.45182e-6 a6=4.70739e-9 a8=2.06430e-13 a10=7.16170e-14 a12=-2.30646e-17
+  -45.003    1.40   1.72047/34.7   14.8
+ -151.840    8.79   air            15.9
+# Group 4 (+46.14)
+   31.049    6.94   1.43875/94.9   18.2
+ -216.866    0.20   air            18.2
+   47.221    5.86   1.49700/81.5   17.9
+  -71.326    1.90   air            17.8
+ -208.068    2.13   1.85006/40.2   16.1  k=0 a4=2.73159e-5 a6=-1.56554e-7 a8=4.00484e-10 a10=-7.50876e-13 a12=7.01430e-16
+   86.193    2.76   air            14.8  k=0 a4=4.42990e-5 a6=-1.33910e-7 a8=3.22402e-10 a10=-4.40140e-13 a12=2.46872e-16
+ -613.677    1.40   1.83400/37.2   14.8
+   57.864    5.29   1.51633/64.1   15.6
+  -61.669   38.08   air            15.8

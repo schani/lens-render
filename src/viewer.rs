@@ -28,6 +28,8 @@ const DEMO_PASSES: u32 = 32;
 struct Controls {
     lens: PathBuf,
     width: usize,
+    /// Focal length of a zoom lens (mm).
+    focal: f64,
     fstop: f64,
     focus_m: f64,
     focus_inf: bool,
@@ -348,6 +350,7 @@ impl Viewer {
         let controls = Controls {
             lens: lens_path.clone(),
             width: c.width as usize,
+            focal: lens.zoom.as_ref().map_or(0.0, |z| z.at),
             fstop,
             focus_m: focus_mm.map_or(10.0, |f| f / 1000.0),
             focus_inf: focus_mm.is_none(),
@@ -428,7 +431,7 @@ impl Viewer {
     /// Rebuilds the lens for the controls and restarts accumulation.
     fn apply(&mut self) -> Result<()> {
         // An edited prescription, or another lens file (which brings its iris);
-        // the f-number is clamped to the new lens' maximum aperture.
+        // the f-number is clamped to the lens' maximum aperture at its focal length.
         let from_file = self.pending.is_none() && self.controls.lens != self.lens_path;
         let new_base = if let Some(p) = self.pending.take() {
             Some(p)
@@ -439,14 +442,17 @@ impl Viewer {
         } else {
             Some(Lens::load(self.controls.lens.to_str().unwrap_or_default())?)
         };
-        if let Some(b) = &new_base {
-            self.controls.fstop = self.controls.fstop.max(b.max_aperture());
-            if from_file {
-                (self.controls.blades, self.controls.curvature, self.controls.coating) = (b.blades, b.blade_curvature, b.coating);
+        if let Some(b) = new_base.as_ref().filter(|_| from_file) {
+            (self.controls.blades, self.controls.curvature, self.controls.coating) = (b.blades, b.blade_curvature, b.coating);
+            if let Some((lo, hi)) = b.zoom_range() {
+                self.controls.focal = self.controls.focal.clamp(lo, hi);
             }
         }
-        let k = self.controls.clone();
         let mut lens = new_base.clone().unwrap_or_else(|| self.base_lens.clone());
+        lens.set_zoom(self.controls.focal);
+        let max_aperture = lens.max_aperture();
+        self.controls.fstop = self.controls.fstop.max(max_aperture);
+        let k = self.controls.clone();
         lens.coating = k.coating;
         let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
         lens.prepare(k.fstop, k.blades, k.rotation, k.curvature, focus, self.file.camera.focus_offset_mm)?;
@@ -460,7 +466,7 @@ impl Viewer {
             spp_per_frame: 1,
             ghosts: k.ghosts,
             ghost_threshold: c.ghost_threshold,
-            light_grid: c.ghost_grid.div_ceil(16) as u32 * 16,
+            light_grid: gpu::ghost_grid(&lens, c.ghost_grid),
             ghost_wavelengths: 4,
             tonemap: Tonemap::Clip,
         };
@@ -482,14 +488,19 @@ impl Viewer {
             self.bank_job = Some(BankJob { key, result: rx, progress });
         }
         self.renderer.configure(&lens, &settings, bank.as_deref())?;
+        self.max_aperture = max_aperture;
         if let Some(b) = new_base {
-            self.max_aperture = b.max_aperture();
             if from_file {
                 self.editor = LensEditor::new(&b);
                 self.save_name = edited_name(&k.lens);
             }
             self.base_lens = b;
             self.lens_path = k.lens.clone();
+        }
+        // A zoom lens is edited as shown, at its focal length.
+        if self.base_lens.zoom.is_some() {
+            self.editor.draft = self.base_lens.clone();
+            self.editor.draft.set_zoom(k.focal);
         }
         self.lens = lens;
         self.applied = Some(k);
@@ -566,6 +577,9 @@ impl Viewer {
             ui.checkbox(&mut self.show_lens, "lens panel");
         });
         ui.separator();
+        if let Some((lo, hi)) = self.lens.zoom_range() {
+            ui.add(egui::Slider::new(&mut k.focal, lo..=hi).logarithmic(true).text("focal length (mm)"));
+        }
         ui.add(egui::Slider::new(&mut k.fstop, self.max_aperture..=32.0).logarithmic(true).text("f-number"));
         ui.horizontal(|ui| {
             ui.add_enabled(!k.focus_inf, egui::Slider::new(&mut k.focus_m, 0.3..=100.0).logarithmic(true).text("focus (m)"));

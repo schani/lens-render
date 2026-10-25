@@ -90,6 +90,48 @@ pub struct FloatingGap {
     pub close_distance: f64,
 }
 
+/// A zoom lens: the focal lengths of the prescription's zoom positions and
+/// the air gaps that change between them.
+#[derive(Clone, Debug)]
+pub struct Zoom {
+    pub focal: Vec<f64>,
+    /// (row, gap at each zoom position).
+    pub gaps: Vec<(usize, Vec<f64>)>,
+    /// Widest f-number at each zoom position, if the stop opening follows it.
+    pub fnumber: Option<Vec<f64>>,
+    /// Current setting, in the focal lengths of `focal`.
+    pub at: f64,
+}
+
+impl Zoom {
+    /// Gap `values` at the current setting: a cubic Hermite curve in log focal
+    /// length with the slopes of the parabola through each position and its
+    /// neighbours (exactly that parabola for three positions).
+    fn gap(&self, values: &[f64]) -> f64 {
+        let x: Vec<f64> = self.focal.iter().map(|f| f.ln()).collect();
+        let n = x.len();
+        if n == 1 {
+            return values[0];
+        }
+        let slope = |i: usize| {
+            if n == 2 {
+                return (values[1] - values[0]) / (x[1] - x[0]);
+            }
+            let j = i.clamp(1, n - 2);
+            let (x0, x1, x2) = (x[j - 1], x[j], x[j + 1]);
+            let (y0, y1, y2) = (values[j - 1], values[j], values[j + 1]);
+            let t = x[i];
+            y0 * (2.0 * t - x1 - x2) / ((x0 - x1) * (x0 - x2)) + y1 * (2.0 * t - x0 - x2) / ((x1 - x0) * (x1 - x2)) + y2 * (2.0 * t - x0 - x1) / ((x2 - x0) * (x2 - x1))
+        };
+        let t = self.at.ln().clamp(x[0], x[n - 1]);
+        let i = (0..n - 1).find(|&i| t <= x[i + 1]).unwrap_or(n - 2);
+        let h = x[i + 1] - x[i];
+        let s = (t - x[i]) / h;
+        let (h00, h10, h01, h11) = (2.0 * s.powi(3) - 3.0 * s * s + 1.0, s.powi(3) - 2.0 * s * s + s, 3.0 * s * s - 2.0 * s.powi(3), s.powi(3) - s * s);
+        (h00 * values[i] + h10 * h * slope(i) + h01 * values[i + 1] + h11 * h * slope(i + 1)).max(0.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Coating {
     None,
@@ -260,6 +302,7 @@ pub struct Lens {
     pub forward_path: Vec<Event>,
     pub backward_path: Vec<Event>,
     pub floating: Vec<FloatingGap>,
+    pub zoom: Option<Zoom>,
 }
 
 pub struct Paraxial {
@@ -278,6 +321,7 @@ impl Lens {
         let mut name = String::from("unnamed lens");
         let mut surfaces = Vec::new();
         let mut floating = Vec::new();
+        let (mut zoom_focal, mut zoom_gaps, mut zoom_fnumber) = (None, Vec::new(), None);
         let (mut blades, mut blade_curvature) = (6, 0.0);
         let mut coating = Coating::SINGLE;
         for (lineno, line) in text.lines().enumerate() {
@@ -307,6 +351,30 @@ impl Lens {
                     bail!("line {}: @float <row> <gap at infinity> <gap at close focus> <close distance m>", lineno + 1);
                 }
                 floating.push(FloatingGap { surface: v[0] as usize - 1, at_infinity: v[1], at_close: v[2], close_distance: v[3] * 1000.0 });
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@zoom-gap") {
+                // @zoom-gap <row> <gap at each zoom position>
+                let v: Vec<f64> = rest.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("line {}", lineno + 1))?;
+                if v.len() < 2 || v[0] < 1.0 {
+                    bail!("line {}: @zoom-gap <row> <gap at each zoom position>", lineno + 1);
+                }
+                zoom_gaps.push((v[0] as usize - 1, v[1..].to_vec()));
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@zoom-fnumber") {
+                // @zoom-fnumber <widest f-number at each zoom position>
+                let v: Vec<f64> = rest.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("line {}", lineno + 1))?;
+                zoom_fnumber = Some(v);
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@zoom") {
+                // @zoom <focal length of each zoom position>
+                let v: Vec<f64> = rest.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("line {}", lineno + 1))?;
+                if v.is_empty() || v[0] <= 0.0 || v.windows(2).any(|w| w[1] <= w[0]) {
+                    bail!("line {}: @zoom <increasing focal lengths>", lineno + 1);
+                }
+                zoom_focal = Some(v);
                 continue;
             }
             if line.is_empty() || line.starts_with('#') {
@@ -355,6 +423,24 @@ impl Lens {
         if let Some(f) = floating.iter().find(|f| f.surface >= surfaces.len()) {
             bail!("@float row {} does not exist", f.surface + 1);
         }
+        let zoom = match zoom_focal {
+            Some(focal) => {
+                for (row, v) in &zoom_gaps {
+                    if *row >= surfaces.len() || floating.iter().any(|f| f.surface == *row) {
+                        bail!("@zoom-gap row {} does not exist or floats", row + 1);
+                    }
+                    if v.len() != focal.len() {
+                        bail!("@zoom-gap row {}: {} gaps for {} zoom positions", row + 1, v.len(), focal.len());
+                    }
+                }
+                if zoom_fnumber.as_ref().is_some_and(|v: &Vec<f64>| v.len() != focal.len() || v.iter().any(|f| *f <= 0.0)) {
+                    bail!("@zoom-fnumber needs one f-number per zoom position");
+                }
+                Some(Zoom { at: focal[0], focal, gaps: zoom_gaps, fnumber: zoom_fnumber })
+            }
+            None if !zoom_gaps.is_empty() || zoom_fnumber.is_some() => bail!("@zoom-gap or @zoom-fnumber without @zoom"),
+            None => None,
+        };
         if surfaces.is_empty() || surfaces.len() > MAX_SURFACES {
             bail!("lens must have 1..={MAX_SURFACES} surfaces");
         }
@@ -368,7 +454,7 @@ impl Lens {
         let forward_path = (0..n).map(|i| Event { surface: i as u16, forward: true, reflect: false }).collect();
         let backward_path = (0..n).rev().map(|i| Event { surface: i as u16, forward: false, reflect: false }).collect();
         let stop_r = surfaces[stop_index].semi_diameter;
-        Ok(Lens {
+        let mut lens = Lens {
             name,
             surfaces,
             coating,
@@ -380,7 +466,12 @@ impl Lens {
             forward_path,
             backward_path,
             floating,
-        })
+            zoom,
+        };
+        if let Some(f) = lens.zoom.as_ref().map(|z| z.at) {
+            lens.set_zoom(f);
+        }
+        Ok(lens)
     }
 
     /// Recomputes vertex positions from the thicknesses.
@@ -403,6 +494,28 @@ impl Lens {
             self.surfaces[f.surface].thickness = f.at_infinity + (f.at_close - f.at_infinity) * t;
         }
         self.update_positions();
+    }
+
+    /// Focal lengths of the zoom range (None for a prime).
+    pub fn zoom_range(&self) -> Option<(f64, f64)> {
+        self.zoom.as_ref().map(|z| (z.focal[0], *z.focal.last().unwrap()))
+    }
+
+    /// Zooms to focal length `f` (clamped to the range; the actual focal
+    /// length, `focal_length()`, differs slightly between zoom positions).
+    /// Call before setting aperture and focus.
+    pub fn set_zoom(&mut self, f: f64) {
+        let Some(z) = &mut self.zoom else { return };
+        let (lo, hi) = (z.focal[0], *z.focal.last().unwrap());
+        z.at = f.clamp(lo, hi);
+        for (row, v) in &z.gaps {
+            self.surfaces[*row].thickness = z.gap(v);
+        }
+        let fnumber = z.fnumber.as_ref().map(|v| z.gap(v));
+        self.update_positions();
+        if let Some(n) = fnumber {
+            self.surfaces[self.stop_index].semi_diameter = self.stop_radius_for_fstop(n);
+        }
     }
 
     /// Glass elements as ranges of surface indices (front to back).
@@ -442,6 +555,16 @@ impl Lens {
         for f in &self.floating {
             t += &format!("@float {} {} {} {}\n", f.surface + 1, f.at_infinity, f.at_close, f.close_distance / 1000.0);
         }
+        if let Some(z) = &self.zoom {
+            let list = |v: &[f64]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ");
+            t += &format!("@zoom {}\n", list(&z.focal));
+            for (row, v) in &z.gaps {
+                t += &format!("@zoom-gap {} {}\n", row + 1, list(v));
+            }
+            if let Some(v) = &z.fnumber {
+                t += &format!("@zoom-fnumber {}\n", list(v));
+            }
+        }
         t += "# radius   thickness   material   semi-diameter\n";
         for s in &self.surfaces {
             let radius = if s.is_stop { "stop".to_string() } else if s.radius == 0.0 { "inf".to_string() } else { s.radius.to_string() };
@@ -458,24 +581,25 @@ impl Lens {
         t
     }
 
-    /// Inserts a surface before row `at`, keeping floating gaps on their rows.
+    /// Inserts a surface before row `at`, keeping floating and zoom gaps on their rows.
     pub fn insert_surface(&mut self, at: usize, s: Surface) {
         self.surfaces.insert(at, s);
-        for f in &mut self.floating {
-            if f.surface >= at {
-                f.surface += 1;
-            }
+        let rows = self.floating.iter_mut().map(|f| &mut f.surface).chain(self.zoom.iter_mut().flat_map(|z| z.gaps.iter_mut().map(|g| &mut g.0)));
+        for r in rows.filter(|r| **r >= at) {
+            *r += 1;
         }
     }
 
-    /// Removes row `at` (and a floating gap on it).
+    /// Removes row `at` (and a floating or zoom gap on it).
     pub fn remove_surface(&mut self, at: usize) {
         self.surfaces.remove(at);
         self.floating.retain(|f| f.surface != at);
-        for f in &mut self.floating {
-            if f.surface > at {
-                f.surface -= 1;
-            }
+        if let Some(z) = &mut self.zoom {
+            z.gaps.retain(|g| g.0 != at);
+        }
+        let rows = self.floating.iter_mut().map(|f| &mut f.surface).chain(self.zoom.iter_mut().flat_map(|z| z.gaps.iter_mut().map(|g| &mut g.0)));
+        for r in rows.filter(|r| **r > at) {
+            *r -= 1;
         }
     }
 
@@ -1035,7 +1159,7 @@ mod tests {
 
     #[test]
     fn text_round_trip() {
-        for text in [include_str!("../lenses/cooke-triplet.lens"), include_str!("../lenses/summilux-50-asph.lens"), include_str!("../lenses/double-gauss.lens")] {
+        for text in [include_str!("../lenses/cooke-triplet.lens"), include_str!("../lenses/summilux-50-asph.lens"), include_str!("../lenses/double-gauss.lens"), ZOOM] {
             let a = Lens::parse(text).unwrap();
             let b = Lens::parse(&a.to_text()).unwrap();
             assert_eq!(a.to_text(), b.to_text());
@@ -1044,7 +1168,44 @@ mod tests {
             for (s, t) in a.surfaces.iter().zip(&b.surfaces) {
                 assert_eq!((s.radius, s.thickness, s.semi_diameter, s.conic, &s.aspheric), (t.radius, t.thickness, t.semi_diameter, t.conic, &t.aspheric));
             }
+            let zoom = |l: &Lens| l.zoom.as_ref().map(|z| (z.focal.clone(), z.gaps.clone(), z.fnumber.clone()));
+            assert_eq!(zoom(&a), zoom(&b));
         }
+    }
+
+    const ZOOM: &str = include_str!("../lenses/canon-24-70-f2.8l-ii.lens");
+
+    /// The zoom at the patent's positions (US 8,736,971 example 3): focal
+    /// length, back focus and F-number; sharp on axis and plausible at the
+    /// edge, wide open. Between them, the gaps follow smoothly and f/2.91 stays.
+    #[test]
+    fn zoom_matches_patent() {
+        let mut lens = Lens::parse(ZOOM).unwrap();
+        assert_eq!(lens.zoom_range(), Some((24.70, 67.88)));
+        for (f, bf) in [(24.70, 38.08), (34.93, 46.62), (67.88, 63.32)] {
+            lens.set_zoom(f);
+            let p = lens.paraxial_data(LAMBDA_D);
+            let max = lens.max_aperture();
+            lens.prepare(2.91, 9, 0.0, 0.8, None, 0.0).unwrap();
+            let best = lens.sensor_z - lens.last_z();
+            let mtf = |h: f64| crate::mtf::mtf_at(&lens, h, None, &[10.0, 30.0]).unwrap();
+            let ((s0, t0), (s1, t1)) = (mtf(0.0), mtf(15.0));
+            println!("f {f}: EFL {:.3} BFD {:.3} best focus {best:.3} f/{max:.3}; MTF 10/30 lp/mm centre {:.2}/{:.2}, 15 mm S {:.2}/{:.2} T {:.2}/{:.2}", p.efl, p.bfd, s0[0], s0[1], s1[0], s1[1], t1[0], t1[1]);
+            assert!((p.efl - f).abs() < 0.005 * f && (p.bfd - bf).abs() < 0.005 * bf && (best - bf).abs() < 0.1);
+            assert!((max - 2.91).abs() < 1e-9);
+            assert!(s0[1] > 0.85 && t0[1] > 0.85 && s1[0] > 0.8 && t1[0] > 0.8 && s1[1] > 0.4 && t1[1] > 0.4);
+        }
+        let mut last = Lens::parse(ZOOM).unwrap();
+        for i in 1..=40 {
+            lens.set_zoom(24.70 * (67.88f64 / 24.70).powf(i as f64 / 40.0));
+            assert!((lens.max_aperture() - 2.91).abs() < 1e-9);
+            assert!(lens.focal_length() > last.focal_length());
+            // Gaps change by a fraction of a millimetre per step.
+            assert!(lens.surfaces.iter().zip(&last.surfaces).all(|(a, b)| (a.thickness - b.thickness).abs() < 1.0));
+            last = lens.clone();
+        }
+        lens.set_zoom(200.0);
+        assert!((lens.surfaces[4].thickness - 30.30).abs() < 1e-12);
     }
 
     #[test]
@@ -1052,6 +1213,24 @@ mod tests {
         let l = Lens::parse(&format!("{TRIPLET}\n@iris 11 0.5\n")).unwrap();
         assert_eq!((l.blades, l.blade_curvature), (11, 0.5));
         assert_eq!(Lens::parse(TRIPLET).unwrap().blades, 6);
+    }
+
+    /// Three zoom positions: the gaps lie on the parabola in log focal length.
+    #[test]
+    fn zoom_gap_interpolation() {
+        let mut lens = Lens::parse(&format!("{TRIPLET}\n@zoom 40 50 80\n@zoom-gap 2 6 7 9\n")).unwrap();
+        assert_eq!(lens.surfaces[1].thickness, 6.0);
+        let x = [40f64.ln(), 50f64.ln(), 80f64.ln()];
+        let y = [6.0, 7.0, 9.0];
+        for f in [40.0, 45.0, 50.0, 63.0, 80.0] {
+            lens.set_zoom(f);
+            let t = f64::ln(f);
+            let q: f64 = (0..3).map(|i| y[i] * (0..3).filter(|&j| j != i).map(|j| (t - x[j]) / (x[i] - x[j])).product::<f64>()).sum();
+            assert!((lens.surfaces[1].thickness - q).abs() < 1e-12, "{f}");
+            assert!((lens.surfaces[2].z - lens.surfaces[1].z - q).abs() < 1e-12);
+        }
+        assert!(Lens::parse(&format!("{TRIPLET}\n@zoom-gap 2 6 7 9\n")).is_err());
+        assert!(Lens::parse(&format!("{TRIPLET}\n@zoom 40 50 80\n@zoom-gap 2 6 7\n")).is_err());
     }
 
     /// Floating gaps interpolate in object vergence.

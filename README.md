@@ -15,6 +15,11 @@ Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
   matches Leica's focal length, distortion, vignetting and close-focus scale,
   but is sharper on axis than Leica's MTF. Sources and uncertainties:
   `lenses/summilux-50-asph.md`.
+- `canon-24-70-f2.8l-ii.lens`: zoom 24–70 mm f/2.8 from Canon's patent
+  US 8,736,971 (example 3; listed as the EF 24-70mm f/2.8L II USM), 18
+  elements, four aspheres. Matches the patent's focal lengths, back focus and
+  F-number at all three zoom positions; semi-diameters are derived. Notes:
+  `lenses/canon-24-70-f2.8l-ii.md`.
 
 ## What is simulated
 
@@ -97,7 +102,7 @@ Any `[camera]` key can be overridden with `--set key=value`.
 
 ### Viewer
 
-Controls for the lens (any `.lens` file next to the scene's), f-number, focus distance (or click the image to focus there),
+Controls for the lens (any `.lens` file next to the scene's), focal length (zoom lenses), f-number, focus distance (or click the image to focus there),
 iris blades, blade curvature and rotation, coating, ghosts, diffraction,
 exposure, tone curve and resolution. Accumulation restarts on lens changes;
 exposure and tone curve apply without restarting. Diffraction kernels for a new
@@ -186,6 +191,7 @@ lens = "../lenses/cooke-triplet.lens"
 width = 1200                        # pixels; height follows the sensor aspect
 sensor_width_mm = 36
 sensor_height_mm = 24
+focal_length_mm = 50                # zoom lenses; omit for the widest
 fstop = 5.6                         # omit for wide open
 focus_distance = 2.0                # metres, or inf
 focus_offset_mm = 0.0               # manual focus shift of the sensor
@@ -249,6 +255,11 @@ Radius `inf` is flat; `stop` marks the iris. Aspheric surfaces take extra
 z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + Σ a₂ᵢ r²ⁱ. Floating elements:
 `@float <row> <gap at infinity> <gap at close focus> <close distance in m>`
 makes the thickness of that row vary linearly in object vergence.
+Zoom lenses: `@zoom <f1> <f2> …` lists the focal lengths of the zoom
+positions, `@zoom-gap <row> <d1> <d2> …` the thickness of a row at each, and
+`@zoom-fnumber <N1> <N2> …` optionally the widest f-number at each (the stop
+opening follows it). Between positions the gaps follow a smooth curve in log
+focal length (the parabola through three positions).
 `@iris <blades> [curvature]` describes the iris (default 6 straight blades), `@coating none|single|multi`
 the anti-reflection coating (default single). Materials are `air`, a
 catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,

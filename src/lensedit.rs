@@ -23,12 +23,15 @@ pub fn group_of(lens: &Lens, i: usize) -> Option<(usize, usize)> {
     Some((first, last))
 }
 
-/// Changes the gap after row `row` by `dz`, floating gaps included.
+/// Changes the gap after row `row` by `dz`, floating and zoom gaps included.
 fn add_gap(lens: &mut Lens, row: usize, dz: f64) {
     lens.surfaces[row].thickness += dz;
     for f in lens.floating.iter_mut().filter(|f| f.surface == row) {
         f.at_infinity += dz;
         f.at_close += dz;
+    }
+    for g in lens.zoom.iter_mut().flat_map(|z| z.gaps.iter_mut()).filter(|g| g.0 == row) {
+        g.1.iter_mut().for_each(|v| *v += dz);
     }
 }
 
@@ -36,7 +39,8 @@ fn add_gap(lens: &mut Lens, row: usize, dz: f64) {
 fn clamp_move(lens: &Lens, first: usize, last: usize, dz: f64) -> f64 {
     let gap = |row: usize| {
         let s = lens.surfaces[row].thickness;
-        lens.floating.iter().filter(|f| f.surface == row).fold(s, |m, f| m.min(f.at_infinity).min(f.at_close))
+        let s = lens.floating.iter().filter(|f| f.surface == row).fold(s, |m, f| m.min(f.at_infinity).min(f.at_close));
+        lens.zoom.iter().flat_map(|z| z.gaps.iter()).filter(|g| g.0 == row).flat_map(|g| g.1.iter()).fold(s, |m, v| m.min(*v))
     };
     let back = if first > 0 { -gap(first - 1) } else { f64::NEG_INFINITY };
     let ahead = if last + 1 < lens.surfaces.len() { gap(last) } else { f64::INFINITY };
@@ -56,8 +60,13 @@ pub fn shift(lens: &mut Lens, first: usize, last: usize, dz: f64) {
 /// Bends surface `i` so that its rim, at height `sd`, sags by `sag` (mm).
 pub fn set_rim(lens: &mut Lens, i: usize, sag: f64, sd: f64) {
     let s = &mut lens.surfaces[i];
+    let old = s.semi_diameter;
     s.semi_diameter = sd.max(0.2);
     if s.is_stop {
+        // A zoom lens' stop opening scales at every focal length.
+        if let Some(v) = lens.zoom.as_mut().and_then(|z| z.fnumber.as_mut()) {
+            v.iter_mut().for_each(|x| *x *= old / sd.max(0.2));
+        }
         return;
     }
     let c = 2.0 * sag / (sag * sag + s.semi_diameter * s.semi_diameter);
@@ -81,7 +90,7 @@ pub fn insert_element(lens: &mut Lens, i: usize) {
         aspheric: Vec::new(),
     };
     let after = ((gap - t) / 2.0).max(0.5);
-    lens.surfaces[i].thickness = after;
+    add_gap(lens, i, after - gap);
     lens.insert_surface(i + 1, surface(6.0 * sd, t, Glass::parse("N-BK7").ok()));
     lens.insert_surface(i + 2, surface(-6.0 * sd, after, None));
 }
@@ -94,6 +103,18 @@ pub fn delete_group(lens: &mut Lens, first: usize, last: usize) {
     let length: f64 = (first..=last).map(|k| lens.surfaces[k].thickness).sum();
     if first > 0 {
         add_gap(lens, first - 1, length);
+        // A zoom gap behind the group moves to the gap in front of it.
+        let current = lens.surfaces[last].thickness;
+        let base = lens.surfaces[first - 1].thickness;
+        if let Some(z) = &mut lens.zoom {
+            if let Some(i) = z.gaps.iter().position(|g| g.0 == last) {
+                let (_, v) = z.gaps.remove(i);
+                match z.gaps.iter_mut().find(|g| g.0 == first - 1) {
+                    Some(g) => g.1.iter_mut().zip(&v).for_each(|(a, b)| *a += b - current),
+                    None => z.gaps.push((first - 1, v.iter().map(|b| base + b - current).collect())),
+                }
+            }
+        }
     }
     for k in (first..=last).rev() {
         lens.remove_surface(k);
@@ -162,6 +183,35 @@ mod tests {
         delete_group(&mut l, 2, 3);
         let l = Lens::parse(&l.to_text()).unwrap();
         assert!((l.surfaces.last().unwrap().z - z_last).abs() < 1e-9);
+    }
+
+    /// Moving a group between zoom gaps moves it by the same amount at every
+    /// focal length; inserting and deleting elements keep the zoom groups in place.
+    #[test]
+    fn zoom_gaps_follow_edits() {
+        let mut l = Lens::parse(&format!("{}\n@zoom 40 50 60\n@zoom-gap 2 6 7 8\n@zoom-gap 4 4 3 2\n@zoom-fnumber 3 3.5 4\n", include_str!("../lenses/cooke-triplet.lens"))).unwrap();
+        let last_z = |l: &Lens| (0..3).map(|i| l.zoom.as_ref().unwrap().focal[i]).map(|f| { let mut l = l.clone(); l.set_zoom(f); l.last_z() }).collect::<Vec<_>>();
+        let before = last_z(&l);
+        shift(&mut l, 2, 3, 0.5);
+        assert_eq!(l.zoom.as_ref().unwrap().gaps, vec![(1, vec![6.5, 7.5, 8.5]), (3, vec![3.5, 2.5, 1.5])]);
+        // The room is the smallest gap over the zoom range.
+        shift(&mut l, 2, 3, 100.0);
+        assert_eq!(l.zoom.as_ref().unwrap().gaps[1], (3, vec![2.0, 1.0, 0.0]));
+        let l2 = Lens::parse(&l.to_text()).unwrap();
+        assert_eq!(l2.zoom.as_ref().unwrap().gaps, l.zoom.as_ref().unwrap().gaps);
+        insert_element(&mut l, 1);
+        assert!(last_z(&l).iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-9));
+        delete_group(&mut l, 2, 3);
+        assert!(last_z(&l).iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-9));
+        // Deleting the middle element hands its zoom gap to the gap in front.
+        let mut l = Lens::parse(&l.to_text()).unwrap();
+        delete_group(&mut l, 2, 3);
+        assert!(last_z(&l).iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-9));
+        // Opening the stop by its rim opens it at every focal length.
+        let mut l = Lens::parse(&l.to_text()).unwrap();
+        let (stop, sd) = (l.stop_index, l.surfaces[l.stop_index].semi_diameter);
+        set_rim(&mut l, stop, 0.0, 2.0 * sd);
+        assert_eq!(l.zoom.as_ref().unwrap().fnumber, Some(vec![1.5, 1.75, 2.0]));
     }
 
     #[test]

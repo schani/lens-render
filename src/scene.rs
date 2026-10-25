@@ -37,6 +37,9 @@ pub struct CameraCfg {
     pub sensor_height_mm: f64,
     #[serde(default = "d_width")]
     pub width: u32,
+    /// Zoom lenses: focal length in mm; the widest if absent.
+    #[serde(default)]
+    pub focal_length_mm: Option<f64>,
     /// Infinity f-number; wide open if absent.
     pub fstop: Option<f64>,
     /// Metres from the front vertex; `inf` for infinity.

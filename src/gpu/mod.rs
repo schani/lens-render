@@ -259,6 +259,16 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Ghost ray grid (multiple of 16) for `grid` cells across the front
+/// element: at least 24 across the entrance pupil (up to 4×), so ghosts
+/// through a pupil much smaller than the front element (wide angles, small
+/// apertures) don't break up into speckles.
+pub fn ghost_grid(lens: &Lens, grid: usize) -> u32 {
+    let p = lens.paraxial_data(crate::glass::LAMBDA_D);
+    let cells = grid as f64 * lens.iris.max_radius / p.entrance_pupil_mag / (1.5 * lens.surfaces[0].semi_diameter);
+    ((grid as f64 * (24.0 / cells).clamp(1.0, 4.0)) as usize).div_ceil(16) as u32 * 16
+}
+
 /// Ray grid size (multiple of 16, at most `max`) for each light's direct
 /// image: about two grid cells per pixel of its estimated sensor footprint.
 fn scene_light_grids(lens: &Lens, lights: &[(crate::math::Vec3, f64)], pitch: f64, max: u32) -> Vec<u32> {

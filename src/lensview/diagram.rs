@@ -28,7 +28,7 @@ const SELECTED: Color32 = Color32::from_rgb(255, 60, 0);
 /// objects at `focus` (mm, None = infinity). Coloured by field, or with
 /// `by_wavelength` traced at 450, 550 and 650 nm and coloured by those.
 pub fn trace_fans(lens: &Lens, focus: Option<f64>, half_diag: f64, by_wavelength: bool) -> Vec<RayPath> {
-    let z_start = lens.surfaces.iter().map(|s| s.z + s.sag(s.semi_diameter)).fold(0.0, f64::min) - 0.15 * lens.sensor_z;
+    let z_start = fan_start(lens);
     let mut out = Vec::new();
     for (fi, frac) in [0.0, 0.7, 1.0].into_iter().enumerate() {
         let Some(theta) = field_for_height(lens, frac * half_diag, focus) else { continue };
@@ -51,6 +51,11 @@ pub fn trace_fans(lens: &Lens, focus: Option<f64>, half_diag: f64, by_wavelength
         }
     }
     out
+}
+
+/// Where the ray fans start, in front of the lens.
+fn fan_start(lens: &Lens) -> f64 {
+    lens.surfaces.iter().map(|s| s.z + s.sag(s.semi_diameter)).fold(0.0, f64::min) - 0.15 * lens.sensor_z
 }
 
 /// The lens at the other ends of its focus range, for showing focus travel.
@@ -152,9 +157,24 @@ impl Diagram {
         // Refitted every frame except while dragging, so the lens doesn't
         // move under the pointer.
         if self.drag.is_none() || self.view.is_none() {
-            let z0 = overlays.fans.unwrap_or(&[]).iter().flat_map(|r| r.pts.first()).map(|p| p.z).fold(0.0, f64::min).min(par.entrance_pupil_z) - 2.0;
-            let z1 = shown.sensor_z.max(par.exit_pupil_z) + 3.0;
-            let ymax = shown.surfaces.iter().map(|s| s.semi_diameter).fold(half_diag, f64::max) * 1.15;
+            let mut z0 = overlays.fans.unwrap_or(&[]).iter().flat_map(|r| r.pts.first()).map(|p| p.z).fold(0.0, f64::min).min(par.entrance_pupil_z) - 2.0;
+            let mut z1 = shown.sensor_z.max(par.exit_pupil_z) + 3.0;
+            let mut ymax = shown.surfaces.iter().map(|s| s.semi_diameter).fold(half_diag, f64::max) * 1.15;
+            // A zoom lens is fitted over its range and anchored on the sensor,
+            // so zooming moves the groups, not the view.
+            if let Some((lo, hi)) = shown.zoom_range() {
+                (z0, z1) = (f64::INFINITY, f64::NEG_INFINITY);
+                for i in 0..=8 {
+                    let mut l = shown.clone();
+                    l.set_zoom(lo * (hi / lo).powf(i as f64 / 8.0));
+                    l.sensor_z = l.paraxial_focus(None, LAMBDA_D);
+                    let p = l.paraxial_data(LAMBDA_D);
+                    z0 = z0.min(fan_start(&l).min(p.entrance_pupil_z) - 2.0 - l.sensor_z);
+                    z1 = z1.max(l.sensor_z.max(p.exit_pupil_z) + 3.0 - l.sensor_z);
+                    ymax = l.surfaces.iter().map(|s| s.semi_diameter * 1.15).fold(ymax, f64::max);
+                }
+                (z0, z1) = (z0 + shown.sensor_z, z1 + shown.sensor_z);
+            }
             let scale = ((rect.width() - 16.0) as f64 / (z1 - z0)).min(rect.height() as f64 / (2.0 * ymax));
             self.view = Some(View { left: rect.left() + 8.0, cy: rect.center().y, z0, scale });
         }

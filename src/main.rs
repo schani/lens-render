@@ -69,6 +69,9 @@ enum Cmd {
         blades: Option<u32>,
         #[arg(long, default_value_t = 21.63)]
         half_diag: f64,
+        /// Focal length in mm of a zoom lens (default: its widest).
+        #[arg(long)]
+        focal: Option<f64>,
         /// Published MTF data (JSON) to overlay.
         #[arg(long)]
         reference: Option<String>,
@@ -83,6 +86,9 @@ enum Cmd {
         /// Half-diagonal of the image format in mm (36x24: 21.63).
         #[arg(long, default_value_t = 21.63)]
         half_diag: f64,
+        /// Focal length in mm of a zoom lens (default: its widest).
+        #[arg(long)]
+        focal: Option<f64>,
         /// Write <prefix>-spots.png and <prefix>-layout.png.
         #[arg(long)]
         out: Option<String>,
@@ -91,15 +97,21 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Analyze { lens, fstop, half_diag, out } => {
+        Cmd::Analyze { lens, fstop, half_diag, focal, out } => {
             let mut lens = lens::Lens::load(&lens)?;
+            if let Some(f) = focal {
+                lens.set_zoom(f);
+            }
             let f = if fstop > 0.0 { fstop } else { lens.max_aperture() };
             lens.set_aperture(f, 0, 0.0, 0.0)?;
             lens.sensor_z = lens.best_focus(None)?;
             print!("{}", analysis::report(&lens, half_diag, out.as_deref())?);
         }
-        Cmd::Mtf { lens, fstop, focus, blades, half_diag, reference, out } => {
-            let lens = lens::Lens::load(&lens)?;
+        Cmd::Mtf { lens, fstop, focus, blades, half_diag, focal, reference, out } => {
+            let mut lens = lens::Lens::load(&lens)?;
+            if let Some(f) = focal {
+                lens.set_zoom(f);
+            }
             let fstops = if fstop.is_empty() { vec![lens.max_aperture()] } else { fstop };
             let reference: Option<serde_json::Value> = match reference {
                 Some(p) => Some(serde_json::from_str(&std::fs::read_to_string(&p)?)?),
@@ -161,6 +173,9 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
     for d in &c.decenter {
         lens.decenter_element(d[0] as usize, d[1], d[2])?;
     }
+    if let Some(f) = c.focal_length_mm {
+        lens.set_zoom(f);
+    }
     let raw_lens = lens.clone();
     let fstop = c.fstop.unwrap_or_else(|| lens.max_aperture());
     let focus = if c.focus_distance.is_finite() { Some(c.focus_distance * 1000.0) } else { None };
@@ -205,7 +220,7 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
     let mut film = if let Some(ctx) = gpu {
         let mut g = gpu::GpuRenderer::new(ctx.clone());
         g.set_scene(&scene);
-        let settings = gpu_settings(&file, w, h, norm);
+        let settings = gpu_settings(&file, &lens, w, h, norm);
         let bank = if c.wave_optics {
             let tb = Instant::now();
             let half_diag = 0.5 * c.sensor_width_mm.hypot(c.sensor_height_mm);
@@ -283,7 +298,7 @@ fn render(scene_path: &str, out: &str, overrides: &[String], cpu: bool) -> Resul
     Ok(())
 }
 
-fn gpu_settings(file: &scene::SceneFile, w: usize, h: usize, norm: f64) -> gpu::Settings {
+fn gpu_settings(file: &scene::SceneFile, lens: &lens::Lens, w: usize, h: usize, norm: f64) -> gpu::Settings {
     let c = &file.camera;
     gpu::Settings {
         w,
@@ -294,7 +309,7 @@ fn gpu_settings(file: &scene::SceneFile, w: usize, h: usize, norm: f64) -> gpu::
         spp_per_frame: 1,
         ghosts: c.ghosts,
         ghost_threshold: c.ghost_threshold,
-        light_grid: c.ghost_grid.div_ceil(16) as u32 * 16,
+        light_grid: gpu::ghost_grid(lens, c.ghost_grid),
         ghost_wavelengths: 0,
         tonemap: if c.tonemap == "filmic" { gpu::Tonemap::Filmic } else { gpu::Tonemap::Clip },
     }
