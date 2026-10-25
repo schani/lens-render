@@ -21,6 +21,13 @@ pub struct Segment {
 struct Timeline {
     fps: f64,
     segments: Vec<Segment>,
+    #[serde(default = "d_quality")]
+    jpeg_quality: u8,
+}
+
+/// The image crate's default.
+fn d_quality() -> u8 {
+    75
 }
 
 pub struct Demo {
@@ -45,13 +52,14 @@ impl Demo {
         let rx = Arc::new(Mutex::new(rx));
         let writing: Arc<AtomicUsize> = Default::default();
         for _ in 0..4 {
-            let (rx, writing, dir) = (rx.clone(), writing.clone(), dir.clone());
+            let (rx, writing, dir, quality) = (rx.clone(), writing.clone(), dir.clone(), t.jpeg_quality);
             std::thread::spawn(move || {
                 loop {
                     let Ok((n, img)) = rx.lock().unwrap().recv() else { return };
                     let rgb: Vec<u8> = img.pixels.iter().flat_map(|c| [c.r(), c.g(), c.b()]).collect();
-                    if let Some(i) = image::RgbImage::from_raw(img.size[0] as u32, img.size[1] as u32, rgb) {
-                        let _ = i.save(dir.join(format!("frames/{n:05}.jpg")));
+                    if let Ok(f) = std::fs::File::create(dir.join(format!("frames/{n:05}.jpg"))) {
+                        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(f), quality);
+                        let _ = image::ImageEncoder::write_image(enc, &rgb, img.size[0] as u32, img.size[1] as u32, image::ExtendedColorType::Rgb8);
                     }
                     writing.fetch_sub(1, Ordering::Relaxed);
                 }
@@ -66,6 +74,10 @@ impl Demo {
             pointer: None,
             sent: None,
         })
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.fps
     }
 
     /// Video time of the frame being made.

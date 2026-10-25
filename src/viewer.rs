@@ -207,118 +207,21 @@ fn edited_name(path: &Path) -> String {
     format!("{}-edited.lens", path.file_stem().unwrap_or_default().to_string_lossy())
 }
 
-/// Records the demo (LENS_VIEWER_DEMO) offscreen: the viewer's UI is drawn
-/// into a texture and read back, one image per video frame. A window would
-/// stall whenever macOS stops redrawing it (covered, another desktop).
+/// Records the demo (LENS_VIEWER_DEMO) offscreen (see `crate::offscreen`).
 pub fn record_demo(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Result<()> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&gpu::device_descriptor(&adapter)))?;
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
-    let rs = egui_wgpu::RenderState {
-        adapter,
-        available_adapters: Vec::new(),
-        instance,
-        device: device.clone(),
-        queue: queue.clone(),
-        target_format: format,
-        renderer: Arc::new(egui::mutex::RwLock::new(renderer)),
-    };
-    let mut viewer = Viewer::new(rs.clone(), file, scene, lens_path, lens, fstop, focus_mm);
-    anyhow::ensure!(viewer.demo.is_some(), "no demo timeline");
     // 1600 × 900 points at 2 pixels per point, like a Retina window.
-    let (size, ppp) = (egui::vec2(1600.0, 900.0), 2.0);
-    let px = [(size.x * ppp) as u32, (size.y * ppp) as u32];
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("demo frame"),
-        size: wgpu::Extent3d { width: px[0], height: px[1], depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = target.create_view(&Default::default());
-    let row = (px[0] * 4).div_ceil(256) * 256;
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("demo readback"),
-        size: (row * px[1]) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let ctx = egui::Context::default();
+    let mut off = crate::offscreen::Offscreen::new(egui::vec2(1600.0, 900.0), 2.0)?;
+    let mut viewer = Viewer::new(off.rs.clone(), file, scene, lens_path, lens, fstop, focus_mm);
+    anyhow::ensure!(viewer.demo.is_some(), "no demo timeline");
+    let ctx = off.ctx.clone();
     ctx.set_theme(egui::Theme::Light);
     let mut frame = eframe::Frame::_new_kittest();
-    let start = Instant::now();
     while !viewer.demo.as_ref().unwrap().done() {
-        let mut raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            max_texture_side: Some(device.limits().max_texture_dimension_2d as usize),
-            time: Some(start.elapsed().as_secs_f64()),
-            ..Default::default()
-        };
-        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+        let mut raw = off.input();
         eframe::App::raw_input_hook(&mut viewer, &ctx, &mut raw);
         let out = ctx.run_ui(raw, |ui| eframe::App::ui(&mut viewer, ui, &mut frame));
         let capture = viewer.demo.as_ref().unwrap().wants(viewer.demo_ready);
-        let jobs = ctx.tessellate(out.shapes, out.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: px, pixels_per_point: out.pixels_per_point };
-        let mut enc = device.create_command_encoder(&Default::default());
-        {
-            let mut r = rs.renderer.write();
-            for (id, deltas) in &out.textures_delta.set {
-                for delta in deltas {
-                    r.update_texture(&device, &queue, *id, delta);
-                }
-            }
-            let extra = r.update_buffers(&device, &queue, &mut enc, &jobs, &screen);
-            queue.submit(extra);
-            let mut pass = enc
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("demo ui"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            r.render(&mut pass, &jobs, &screen);
-            drop(pass);
-            for id in &out.textures_delta.free {
-                r.free_texture(id);
-            }
-        }
-        if capture {
-            enc.copy_texture_to_buffer(
-                target.as_image_copy(),
-                wgpu::TexelCopyBufferInfo { buffer: &readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None } },
-                wgpu::Extent3d { width: px[0], height: px[1], depth_or_array_layers: 1 },
-            );
-        }
-        queue.submit([enc.finish()]);
-        if capture {
-            let (tx, rx) = std::sync::mpsc::channel();
-            readback.map_async(wgpu::MapMode::Read, .., move |r| {
-                let _ = tx.send(r);
-            });
-            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })?;
-            rx.recv()??;
-            let img = {
-                let data = readback.get_mapped_range(..).map_err(|e| anyhow::anyhow!("{e:?}"))?;
-                let pixels = (0..px[1] as usize)
-                    .flat_map(|y| data[y * row as usize..y * row as usize + px[0] as usize * 4].chunks(4).map(|c| egui::Color32::from_rgba_premultiplied(c[0], c[1], c[2], 255)).collect::<Vec<_>>())
-                    .collect();
-                egui::ColorImage { size: [px[0] as usize, px[1] as usize], pixels, ..Default::default() }
-            };
-            readback.unmap();
+        if let Some(img) = off.paint(out, capture)? {
             viewer.demo.as_mut().unwrap().deliver(img);
         }
     }
