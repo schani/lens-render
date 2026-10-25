@@ -510,11 +510,6 @@ at = "@sharpest"
 field_curves = true
 
 [[chapter.tag]]
-at = "@coma"
-kind = "problem"
-text = "coma"
-
-[[chapter.tag]]
 at = "@astigmatism"
 kind = "problem"
 text = "astigmatism"
@@ -711,6 +706,7 @@ id = "petzval"
 title = "The curved field"
 number = 11
 narration = """One error survives everything we've tried: the curved field.
+This lens hides it as astigmatism: its two sharp surfaces bend away on either side of the sensor.
 Joseph Petzval showed that it depends only on the power and the glass of each element, not on its shape or position.
 Every positive lens curves the field. Only a negative lens can flatten it,
 but a negative lens also undoes the focusing."""
@@ -721,6 +717,23 @@ tail = 1.4
 at = "@curved"
 kind = "problem"
 text = "curved field"
+
+[[chapter.note]]
+at = "@astigmatism"
+until = "@Joseph"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.364]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@either"
+until = "@Joseph"
+on = "view"
+shape = "label"
+pos = [0.62, 0.62]
+text = "T and S"
+color = "white"
 
 [[chapter.note]]
 at = "@Every#2"

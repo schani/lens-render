@@ -285,8 +285,12 @@ impl Explainer {
                 let mut new = clip.clone();
                 new.multiply_opacity(*fa);
                 draw_lens(&new, &view, &main, s, now, dr);
+                // One name at a time: the old one fades out, then the new one in.
+                draw_label(&clip, prev, dr, smooth(1.0 - 2.0 * *fa as f64));
+                draw_label(&clip, &main, dr, smooth(2.0 * *fa as f64 - 1.0));
             } else {
                 draw_lens(&clip, &view, &main, s, now, dr);
+                draw_label(&clip, &main, dr, 1.0);
             }
         }
         self.draw_view(&p, s, &main, now);
@@ -622,13 +626,13 @@ impl Explainer {
         let cols = if n <= 9 { 3 } else { 4 };
         let top = 76.0;
         let cell = vec2(rr.width() / cols as f32, (rr.height() - top) / n.div_ceil(cols) as f32);
-        // One scale for all, so sizes compare.
         let lenses: Vec<_> = self.timeline.recap.iter().map(|e| self.lenses.get(&e.lens)).collect();
-        let len = lenses.iter().flatten().map(|l| l.last_z() - l.surfaces[0].z).fold(10.0, f64::max);
-        let sd = lenses.iter().flatten().flat_map(|l| l.surfaces.iter().map(|s| s.semi_diameter)).fold(5.0, f64::max);
-        let scale = ((cell.x - 60.0) as f64 / len).min((cell.y - 64.0) as f64 / (2.0 * sd));
         for (i, (e, lens)) in self.timeline.recap.iter().zip(&lenses).enumerate() {
             let Some(lens) = lens else { continue };
+            // Schematic: each design as tall as its cell allows.
+            let len = (lens.last_z() - lens.surfaces[0].z).max(1.0);
+            let sd = lens.surfaces.iter().map(|s| s.semi_diameter).fold(1.0, f64::max);
+            let scale = ((cell.x - 80.0) as f64 / len).min((cell.y - 76.0) as f64 / (2.0 * sd));
             let mut q = p.clone();
             q.multiply_opacity(smooth((age - 0.45 * i as f64) / 0.4));
             let c = rr.min + vec2(cell.x * (i % cols) as f32, top + cell.y * (i / cols) as f32);
@@ -824,7 +828,11 @@ fn draw_lens(p: &Painter, v: &DiagramView, o: &Optics, s: &State, now: f64, r: R
     let hd = lens.sensor_half.0.hypot(lens.sensor_half.1);
     p.line_segment([v.at(lens.sensor_z, -hd), v.at(lens.sensor_z, hd)], Stroke::new(4.0, TEXT));
     p.text(v.at(lens.sensor_z, hd) - vec2(0.0, 4.0), Align2::CENTER_BOTTOM, "sensor", medium(13.0), DIM);
-    p.text(r.left_top() + vec2(14.0, 10.0), Align2::LEFT_TOP, &o.label, medium(15.0), DIM);
+}
+
+/// The cross-section's lens name.
+fn draw_label(p: &Painter, o: &Optics, r: Rect, alpha: f32) {
+    p.text(r.left_top() + vec2(14.0, 10.0), Align2::LEFT_TOP, &o.label, medium(15.0), DIM.gamma_multiply(alpha));
 }
 
 /// Points and lengths (per axis) of an annotation's coordinate space.

@@ -3,7 +3,7 @@
 
 use crate::glass::{LAMBDA_C, LAMBDA_D, LAMBDA_F};
 use crate::lens::Lens;
-use crate::math::Vec3;
+use crate::math::{Ray, Vec3};
 use crate::optimize::{HALF_DIAG, SPOT_WAVELENGTHS, rms_spot_um};
 use crate::psf::{Source, chief_aim, chief_image, field_for_height};
 use crate::seidel::{seidel, transverse_um};
@@ -113,10 +113,10 @@ pub fn numbers(lens: &Lens, fstop: f64, dist: f64) -> Result<Numbers> {
 /// position as rendered), object `dist` mm away. µm, distortion in %.
 /// Focus errors become the radius of the blur disc they cause, δ / 2N.
 pub struct Scoreboard {
-    /// Spherical (on-axis RMS at 546 nm); coma (corner, tangential:
-    /// mid-point of the rim rays from the chief ray); astigmatism (corner,
-    /// T and S foci Δz apart: blur at the medial focus, Δz / 4N); field
-    /// curvature (corner, medial focus δ from the sensor: δ / 2N);
+    /// Spherical (on-axis RMS at 546 nm); coma (corner spot's centroid
+    /// offset from the chief ray at its best focus); astigmatism (corner,
+    /// foci of the full T and S fans Δz apart: blur at the medial focus,
+    /// Δz / 4N); field curvature (corner, medial focus δ from the sensor: δ / 2N);
     /// distortion (corner, %, negative: barrel); axial colour (C and F
     /// foci Δz apart, between them: Δz / 4N); lateral colour (corner F–C
     /// chief-ray separation).
@@ -127,38 +127,71 @@ pub struct Scoreboard {
 
 const E_LINE: f64 = 546.07;
 
-/// Tangential fan of the corner point at 546 nm: (pupil fraction, sensor height)
-/// of the rays that pass, from −1.5 to 1.5 times the paraxial pupil radius.
-fn corner_fan(lens: &Lens, src: &Source) -> Vec<(f64, f64)> {
-    let Some(q) = chief_aim(lens, src, E_LINE) else { return Vec::new() };
-    let par = lens.paraxial_data(LAMBDA_D);
-    let r = lens.iris.max_radius / par.entrance_pupil_mag;
+/// Exit rays at 546 nm of the corner point through the entrance pupil
+/// (1.6 × its paraxial radius, apertures clipping): the tangential fan
+/// (y), the sagittal fan (x), or a full grid; and the chief ray.
+fn corner_rays(lens: &Lens, src: &Source, fan: Option<bool>) -> Option<(Vec<Ray>, Ray)> {
+    let q = chief_aim(lens, src, E_LINE)?;
+    let r = 1.6 * lens.iris.max_radius / lens.paraxial_data(LAMBDA_D).entrance_pupil_mag;
     let m = lens.media(E_LINE);
-    (0..=600)
-        .filter_map(|k| {
-            let u = 1.5 * (k as f64 / 300.0 - 1.0);
-            let (out, _) = lens.trace_forward(src.ray_through(q + Vec3::new(0.0, u * r, 0.0)).0, E_LINE, &m)?;
-            Some((u, out.o.y + out.d.y * (lens.sensor_z - out.o.z) / out.d.z))
-        })
-        .collect()
+    let trace = |x: f64, y: f64| lens.trace_forward(src.ray_through(q + Vec3::new(x * r, y * r, 0.0)).0, E_LINE, &m).map(|o| o.0);
+    let n = 201;
+    let u = |k: usize| 2.0 * k as f64 / (n - 1) as f64 - 1.0;
+    let rays: Vec<Ray> = match fan {
+        Some(true) => (0..n).filter_map(|k| trace(0.0, u(k))).collect(),
+        Some(false) => (0..n).filter_map(|k| trace(u(k), 0.0)).collect(),
+        None => {
+            let g = 64;
+            let c = |k: usize| 2.0 * (k as f64 + 0.5) / g as f64 - 1.0;
+            (0..g * g).map(|k| (c(k % g), c(k / g))).filter(|(x, y)| x * x + y * y <= 1.0).filter_map(|(x, y)| trace(x, y)).collect()
+        }
+    };
+    Some((rays, trace(0.0, 0.0)?))
 }
 
-/// Real-ray tangential and sagittal foci (z) of a narrow bundle around the chief ray.
-fn ts_foci(lens: &Lens, src: &Source) -> Option<(f64, f64)> {
-    let q = chief_aim(lens, src, E_LINE)?;
-    let r = 0.25 * lens.iris.max_radius / lens.paraxial_data(LAMBDA_D).entrance_pupil_mag;
-    let m = lens.media(E_LINE);
-    // z where a pair of rays symmetric about the chief ray cross, in y (T) or x (S).
-    let cross = |d: Vec3, y: bool| -> Option<f64> {
-        let a = lens.trace_forward(src.ray_through(q + d).0, E_LINE, &m)?.0;
-        let b = lens.trace_forward(src.ray_through(q - d).0, E_LINE, &m)?.0;
-        let (pa, sa, pb, sb) = if y { (a.o.y, a.d.y / a.d.z, b.o.y, b.d.y / b.d.z) } else { (a.o.x, a.d.x / a.d.z, b.o.x, b.d.x / b.d.z) };
-        let (pa, pb) = (pa - sa * a.o.z, pb - sb * b.o.z);
-        Some((pb - pa) / (sa - sb))
+/// Plane of least spread of one coordinate (y or x) of rays.
+fn least_spread(rays: &[Ray], use_y: bool) -> Option<f64> {
+    if rays.len() < 3 {
+        return None;
+    }
+    let ab: Vec<(f64, f64)> = rays.iter().map(|r| {
+        let (dir, pos) = if use_y { (r.d.y, r.o.y) } else { (r.d.x, r.o.x) };
+        let b = dir / r.d.z;
+        (pos - b * r.o.z, b)
+    }).collect();
+    let n = ab.len() as f64;
+    let (am, bm) = (ab.iter().map(|v| v.0).sum::<f64>() / n, ab.iter().map(|v| v.1).sum::<f64>() / n);
+    let num: f64 = ab.iter().map(|(a, b)| (a - am) * (b - bm)).sum();
+    let den: f64 = ab.iter().map(|(_, b)| (b - bm) * (b - bm)).sum();
+    (den > 0.0).then(|| -num / den)
+}
+
+fn at_z(r: &Ray, z: f64) -> (f64, f64) {
+    let t = (z - r.o.z) / r.d.z;
+    (r.o.x + r.d.x * t, r.o.y + r.d.y * t)
+}
+
+/// Coma: the corner spot's centroid offset from the chief ray (mm), on the
+/// plane where that spot's RMS is least.
+fn coma_offset(rays: &[Ray], chief: &Ray, z0: f64) -> Option<f64> {
+    if rays.is_empty() {
+        return None;
+    }
+    let n = rays.len() as f64;
+    let stats = |z: f64| {
+        let p: Vec<(f64, f64)> = rays.iter().map(|r| at_z(r, z)).collect();
+        let (cx, cy) = (p.iter().map(|q| q.0).sum::<f64>() / n, p.iter().map(|q| q.1).sum::<f64>() / n);
+        (p.iter().map(|q| (q.0 - cx).powi(2) + (q.1 - cy).powi(2)).sum::<f64>() / n, cx, cy)
     };
-    // Narrower pairs where vignetting cuts the wider ones.
-    let at = |y: bool| [1.0, 0.5, 0.2].iter().find_map(|f| cross(if y { Vec3::new(0.0, f * r, 0.0) } else { Vec3::new(f * r, 0.0, 0.0) }, y));
-    Some((at(true)?, at(false)?))
+    let (mut a, mut b) = (z0 - 15.0, z0 + 15.0);
+    for _ in 0..80 {
+        let (m1, m2) = (b - 0.618 * (b - a), a + 0.618 * (b - a));
+        if stats(m1).0 < stats(m2).0 { b = m2 } else { a = m1 }
+    }
+    let z = 0.5 * (a + b);
+    let (_, cx, cy) = stats(z);
+    let (hx, hy) = at_z(chief, z);
+    Some((cx - hx).hypot(cy - hy))
 }
 
 pub fn scoreboard(lens: &Lens, dist: f64) -> Scoreboard {
@@ -167,16 +200,13 @@ pub fn scoreboard(lens: &Lens, dist: f64) -> Scoreboard {
     let spherical = rms_spot_um(lens, 0.0, Some(dist), &[(E_LINE, 1.0)], Some(lens.sensor_z)).unwrap_or(f64::NAN);
     let th = field_for_height(lens, HALF_DIAG, Some(dist));
     let src = th.map(|th| Source::at_field(lens, th, Some(dist)));
-    let coma = src.as_ref().map_or(f64::NAN, |src| {
-        let fan = corner_fan(lens, src);
-        // The rays that pass on either side of the chief ray, without gaps.
-        let chief = fan.iter().min_by(|a, b| a.0.abs().total_cmp(&b.0.abs())).copied();
-        match (chief, fan.first(), fan.last()) {
-            (Some((u0, y0)), Some(lo), Some(hi)) if u0.abs() < 0.01 => ((lo.1 + hi.1) / 2.0 - y0).abs() * 1000.0,
-            _ => f64::NAN,
-        }
+    let coma = src.as_ref().and_then(|src| {
+        let (rays, chief) = corner_rays(lens, src, None)?;
+        coma_offset(&rays, &chief, lens.sensor_z)
     });
-    let (astigmatism, curvature) = match src.as_ref().and_then(|src| ts_foci(lens, src)) {
+    // Foci of the full tangential and sagittal fans: how the lens balances them.
+    let foci = src.as_ref().and_then(|src| Some((least_spread(&corner_rays(lens, src, Some(true))?.0, true)?, least_spread(&corner_rays(lens, src, Some(false))?.0, false)?)));
+    let (astigmatism, curvature) = match foci {
         Some((zt, zs)) => (blur_um(zt - zs) / 2.0, blur_um((zt + zs) / 2.0 - lens.sensor_z)),
         None => (f64::NAN, f64::NAN),
     };
@@ -198,6 +228,7 @@ pub fn scoreboard(lens: &Lens, dist: f64) -> Scoreboard {
         }
     });
     let blur = [0.0, HALF_DIAG].map(|h| rms_spot_um(lens, h, Some(dist), &SPOT_WAVELENGTHS, Some(lens.sensor_z)).unwrap_or(f64::NAN));
+    let coma = coma.map_or(f64::NAN, |c| c * 1000.0);
     Scoreboard { bars: [spherical, coma, astigmatism, curvature, distortion, axial, lateral], blur }
 }
 
@@ -331,10 +362,38 @@ mod tests {
         let l = &landscape.bars;
         assert!((l[4] + 3.6).abs() < 0.2, "landscape distortion {}", l[4]);
         // Its corner blur is mostly astigmatism.
-        assert!(l[5] < 5.0 && l[3] < 10.0 && (l[2] / landscape.blur[1] - 1.4).abs() < 0.2, "landscape {l:?} {:?}", landscape.blur);
+        assert!(l[5] < 5.0 && l[3] < 15.0 && (l[2] / landscape.blur[1] - 1.3).abs() < 0.2, "landscape {l:?} {:?}", landscape.blur);
         let stopped = scoreboard(&setup(include_str!("../lenses/explainer/02-best-form.lens"), 16.0), 2500.0);
         let open = scoreboard(&setup(include_str!("../lenses/explainer/02-best-form.lens"), 4.0), 2500.0);
         assert!(stopped.bars[0] < open.bars[0] / 4.0 && stopped.blur[0] < 10.0, "{:?} {:?}", stopped.bars, stopped.blur);
         assert!((stopped.bars[4] - open.bars[4]).abs() < 0.05);
+    }
+
+    /// The bars agree with the measured blur: no off-axis bar far above the
+    /// corner blur, spherical aberration not far above the centre blur.
+    #[test]
+    fn scoreboard_matches_measured_blur() {
+        let lenses = [
+            ("01-singlet", 4.0),
+            ("02b-flat-front", 4.0),
+            ("02-best-form", 4.0),
+            ("02-best-form", 16.0),
+            ("04-achromat", 8.0),
+            ("05-landscape", 14.0),
+            ("06-rapid-rectilinear", 8.0),
+            ("07-triplet", 3.5),
+            ("08-triplet-f2", 2.0),
+            ("09-clark", 4.0),
+            ("10-planar", 2.8),
+            ("11b-double-gauss", 2.0),
+        ];
+        for (name, f) in lenses {
+            let text = std::fs::read_to_string(format!("lenses/explainer/{name}.lens")).unwrap();
+            let s = scoreboard(&setup(&text, f), 2500.0);
+            for k in 1..4 {
+                assert!(s.bars[k] <= 2.5 * s.blur[1], "{name}: bar {k} {} vs corner {}", s.bars[k], s.blur[1]);
+            }
+            assert!(s.bars[0] <= 2.0 * s.blur[0], "{name}: spherical {} vs centre {}", s.bars[0], s.blur[0]);
+        }
     }
 }
