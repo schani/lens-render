@@ -7,7 +7,8 @@ Each `NN-name.lens` is generated from `NN-name.toml` (start design,
 variables, constraints, merit) by `lens-render optimize`
 (`src/optimize.rs`). `scripts/explainer-lenses.sh` regenerates all lenses,
 `bending.json` and `numbers.json` (the rows of the tables below, in order).
-#7 and #11 are `../cooke-triplet.lens` and `../double-gauss.lens`, unchanged.
+#7 and #11 are `../cooke-triplet.lens` and `../double-gauss.lens`, unchanged;
+`07-triplet.lens` is #7 re-optimised for 2.5 m (the video uses it).
 
 ## Method
 
@@ -47,6 +48,7 @@ variables, constraints, merit) by `lens-render optimize`
 | 5 | 14.00 | 50.00 | 53.2 | 67.1 | 3.2 | 19.1 | 34.3 | -3.62 | 0 | -76 | 0.59 |
 | 6 | 8.00 | 50.00 | 40.4 | 61.7 | 10.6 | 34.9 | 61.7 | +0.40 | 347 | -75 | 0.57 |
 | 7 | 3.50 | 50.02 | 43.2 | 61.2 | 5.1 | 49.9 | 55.2 | +0.17 | 87 | -128 | 0.61 |
+| 07 (7 re-opt.) | 3.50 | 50.00 | 42.0 | 59.5 | 5.2 | 24.0 | 11.5 | -1.15 | 105 | -116 | 0.31 |
 | 8 | 2.00 | 50.00 | 35.2 | 60.3 | 34.5 | 54.3 | 31.3 | +0.76 | 199 | -101 | 0.36 |
 | 9 | 4.00 | 50.00 | 39.8 | 59.4 | 16.6 | 32.3 | 31.0 | +1.02 | 421 | -281 | 0.44 |
 | 10 | 2.80 | 50.00 | 37.5 | 61.6 | 20.2 | 72.9 | 73.3 | +1.75 | -1 | -141 | 0.36 |
@@ -105,8 +107,9 @@ centre RMS only drops 36.9 → 30.6 µm (×1.2): axial colour dominates.
    it is no sharper than #5 (3.5 / 18 / 38 µm): its gains are speed and
    straight lines.
 7. **Cooke triplet, f/3.5** (as is). 5 / 50 / 55 µm. For 2.5 m it is not
-   optimal by this merit: re-optimised (same glasses) it reaches 9 / 28 /
-   20 µm. File unchanged.
+   optimal by this merit: re-optimised (same glasses, `07-triplet.lens`) it
+   reaches 5 / 24 / 11 µm, with −1.2 % distortion and 31 % corner
+   illumination. File unchanged.
 8. **Triplet at f/2** (same glasses, everything free, 30 restarts).
    35 / 54 / 31 µm; on axis alone it could reach 14 µm, but not together
    with the field (0 + 0.5 field: 30 / 35 µm).
