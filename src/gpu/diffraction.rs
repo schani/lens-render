@@ -116,6 +116,11 @@ impl GpuDiffraction {
         self.key.as_ref() == Some(key)
     }
 
+    /// Whether kernels (for any configuration) are in place.
+    pub fn has_kernels(&self) -> bool {
+        self.key.is_some()
+    }
+
     fn fft_pipeline(&mut self, n: u32) -> usize {
         if let Some((_, i)) = self.fft_pipelines.iter().find(|(m, _)| *m == n) {
             return *i;

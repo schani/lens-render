@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use eframe::egui;
 use std::time::Instant;
 
-/// Frames to accumulate before diffraction is switched on (it costs a full
-/// FFT convolution per displayed frame, and kernels are rebuilt on lens changes).
-const DIFFRACTION_AFTER: u32 = 8;
+/// Frames after a change during which every frame is displayed; later only
+/// every 4th (with diffraction, each display costs an FFT convolution).
+const DISPLAY_EVERY_FRAME: u32 = 8;
 const MAX_FRAMES: u32 = 1024;
 
 #[derive(Clone, PartialEq)]
@@ -220,6 +220,7 @@ fn lens_files(path: &Path) -> Vec<(PathBuf, String)> {
 impl Viewer {
     fn new(rs: egui_wgpu::RenderState, file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Viewer {
         let mut renderer = GpuRenderer::new(GpuContext { device: rs.device.clone(), queue: rs.queue.clone() });
+        renderer.background_kernels = true;
         renderer.set_scene(&scene);
         let c = &file.camera;
         let controls = Controls {
@@ -844,10 +845,8 @@ impl eframe::App for Viewer {
             self.renderer.render_frame();
         }
         self.renderer.set_display(2f64.powf(self.exposure_ev), if self.filmic { Tonemap::Filmic } else { Tonemap::Clip });
-        // Diffraction costs an FFT convolution per display update; once the image
-        // has settled, refresh the display every 4th frame only.
-        let diffract = self.diffraction && frames >= DIFFRACTION_AFTER;
-        if !diffract || frames % 4 == 0 || frames >= MAX_FRAMES {
+        let diffract = self.diffraction;
+        if !diffract || frames < DISPLAY_EVERY_FRAME || frames % 4 == 0 || frames >= MAX_FRAMES {
             if let Err(e) = self.renderer.resolve(diffract) {
                 self.status = format!("{e}");
             }

@@ -237,6 +237,11 @@ pub struct GpuRenderer {
     diffraction: Option<diffraction::GpuDiffraction>,
     /// Kernel configuration the GPU could not handle (too large a transform).
     diffraction_unsupported: Option<diffraction::KernelKey>,
+    /// Let `resolve` keep applying the previous diffraction kernels while new
+    /// ones are made in the background (for the viewer: no stall, no frames
+    /// without diffraction), instead of waiting for them.
+    pub background_kernels: bool,
+    kernel_job: Option<(diffraction::KernelKey, std::sync::mpsc::Receiver<Vec<(usize, Vec<f64>)>>)>,
 }
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
@@ -462,6 +467,8 @@ impl GpuRenderer {
             direct_grid: Vec::new(),
             diffraction: None,
             diffraction_unsupported: None,
+            background_kernels: false,
+            kernel_job: None,
             ctx,
         }
     }
@@ -694,6 +701,7 @@ impl GpuRenderer {
             }
             // The diffraction commands are bound to the old spectral buffer.
             self.diffraction = None;
+            self.kernel_job = None;
             self.film_dims = Some((s.w, s.h, s.bins));
             let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
             self.film_buf = Some(device.create_buffer(&wgpu::BufferDescriptor { label: Some("film"), size, usage, mapped_at_creation: false }));
@@ -993,15 +1001,44 @@ impl GpuRenderer {
         if d.is_configured(&key) {
             return Ok(true);
         }
-        let spec = crate::diffraction::PupilSpectrum::get(&iris, stop_r);
-        let width = LAMBDA_RANGE / s.bins as f64;
-        let kernels: Vec<(usize, Vec<f64>)> = (0..s.bins)
-            .map(|b| {
-                let l = LAMBDA_MIN + width * (b as f64 + 0.5);
-                let half = crate::diffraction::kernel_half(l, n_w, pitch);
-                (half, crate::diffraction::kernel(&spec, l, n_w, pitch, half))
-            })
-            .collect();
+        let bins = s.bins;
+        let make = move || {
+            let spec = crate::diffraction::PupilSpectrum::get(&iris, stop_r);
+            let width = LAMBDA_RANGE / bins as f64;
+            (0..bins)
+                .map(|b| {
+                    let l = LAMBDA_MIN + width * (b as f64 + 0.5);
+                    let half = crate::diffraction::kernel_half(l, n_w, pitch);
+                    (half, crate::diffraction::kernel(&spec, l, n_w, pitch, half))
+                })
+                .collect::<Vec<(usize, Vec<f64>)>>()
+        };
+        // A build in the background finishes before the next one starts (for
+        // the newest settings); meanwhile the previous kernels stay in use.
+        if let Some((k, rx)) = self.kernel_job.take() {
+            match rx.try_recv() {
+                Ok(kernels) => {
+                    if d.configure(k.clone(), &kernels, self.spectral_buf.as_ref().unwrap()).is_err() {
+                        self.diffraction_unsupported = Some(k);
+                    }
+                    return Ok(d.has_kernels());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.kernel_job = Some((k, rx));
+                    return Ok(true);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if self.background_kernels && d.has_kernels() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(make());
+            });
+            self.kernel_job = Some((key, rx));
+            return Ok(true);
+        }
+        let kernels = make();
         let ok = d.configure(key.clone(), &kernels, self.spectral_buf.as_ref().unwrap()).is_ok();
         if !ok {
             self.diffraction_unsupported = Some(key);
@@ -1443,6 +1480,35 @@ mod tests {
             let change: f64 = plain.data.iter().zip(&diffracted.data).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum();
             assert!(change > 1e-3 * total(&plain), "diffraction had no effect");
         }
+    }
+
+    /// With background kernels, a new f-number never leaves a frame without
+    /// diffraction, and its own kernels arrive.
+    #[test]
+    fn background_kernels_keep_diffraction() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let light = Light { center: Vec3::new(0.0, 0.0, -3000.0), radius: 5.0, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1.0 } };
+        let scene = Scene { rects: vec![], lights: vec![light], background: [0.0; 3] };
+        let s = settings(120, 80, 8, false);
+        let mut g = GpuRenderer::new(ctx);
+        g.background_kernels = true;
+        g.set_scene(&scene);
+        g.configure(&lens(8.0, Some(3000.0)), &s, None).unwrap();
+        assert!(g.resolve(true).unwrap());
+        g.configure(&lens(11.0, Some(3000.0)), &s, None).unwrap();
+        let key = |g: &GpuRenderer| {
+            let (iris, stop_r, n_w) = g.optics.clone().unwrap();
+            diffraction::KernelKey::new(120, 80, 8, &iris, stop_r, n_w, s.sensor_w / 120.0)
+        };
+        let want = key(&g);
+        for _ in 0..500 {
+            assert!(g.resolve(true).unwrap(), "a frame without diffraction");
+            if g.diffraction.as_ref().unwrap().is_configured(&want) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the new kernels never arrived");
     }
 
     /// Aspheric surfaces trace the same on the GPU as on the CPU.

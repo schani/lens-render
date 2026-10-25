@@ -100,8 +100,8 @@ Any `[camera]` key can be overridden with `--set key=value`.
 Controls for the lens (any `.lens` file next to the scene's), f-number, focus distance (or click the image to focus there),
 iris blades, blade curvature and rotation, coating, ghosts, diffraction,
 exposure, tone curve and resolution. Accumulation restarts on lens changes;
-exposure and tone curve apply without restarting. Diffraction switches on
-after 8 frames, once the image has settled. "Save PNG" writes `view.png`.
+exposure and tone curve apply without restarting. Diffraction kernels for a new
+f-number are made in the background; the previous ones stay in use meanwhile. "Save PNG" writes `view.png`.
 
 The lens panel below the image shows the lens in cross-section, traced
 through as it is set up, and edits it:
