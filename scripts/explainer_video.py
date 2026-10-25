@@ -112,16 +112,11 @@ class Clock:
 
 
 def path_of(entry, what):
-    """A lens or bending file: the real one if it exists, else its placeholder."""
-    if isinstance(entry, str):
-        entry = {"file": entry}
-    real = os.path.join(ROOT, entry["file"])
-    if os.path.exists(real):
-        return real
-    if "placeholder" in entry:
-        print(f"placeholder for {what}: {entry['placeholder']}")
-        return os.path.join(ROOT, entry["placeholder"])
-    sys.exit(f"missing {what}: {entry['file']}")
+    """A lens or bending file (path, or table with `file`) relative to the repository."""
+    path = os.path.join(ROOT, entry["file"] if isinstance(entry, dict) else entry)
+    if not os.path.exists(path):
+        sys.exit(f"missing {what}: {path}")
+    return path
 
 
 def timeline(script, only):

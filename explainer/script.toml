@@ -28,7 +28,7 @@
 # (divider position; 0 = no split), split_fstop, full (1: render fills the
 # screen), centre / corner (inset crop centres), inset_zoom, fields (ray
 # fans at these fractions of the image diagonal: 0, 0.7, 1), rays,
-# by_wavelength, highlight (glass piece, 0 = front; -1 none), diagram_zoom
+# by_wavelength, highlight (glass pieces, 0 = front; -1 none), diagram_zoom
 # (magnification of the cross-section about the sensor), zoom_len /
 # zoom_height (focus zoom ranges in mm, 0 = auto), field_range, and the
 # switches focus_zoom, field_curves, bending, ideal_grid, scoreboard, hud,
@@ -39,7 +39,8 @@
 # light [0.098, 0.92], corner star [0.036, 0.92]. In both insets the star is
 # at [0.236, 0.5] and the light at [0.765, 0.5].
 #
-# Numbers in [brackets] are placeholders until the final designs exist.
+# Every number spoken was checked against lenses/explainer/README.md and the
+# scoreboard (metrics::scoreboard).
 
 [settings]
 fps = 30
@@ -47,34 +48,29 @@ render_width = 1800
 speed = 1.0
 lead = 0.35
 tail = 0.9
-bending = { file = "lenses/explainer/bending.json", placeholder = ".context/explainer/placeholders/bending.json" }
+bending = "lenses/explainer/bending.json"
 
 [scenes]
 lesson = "scenes/lesson.toml"
 real = "scenes/garden.toml"
 
-# `file` is the final design; `placeholder` stands in until it exists.
 [lenses]
-singlet = { file = "lenses/explainer/01-singlet.lens", placeholder = ".context/explainer/placeholders/singlet.lens", label = "Single lens" }
-singlet_flat = { file = "lenses/explainer/02-singlet-flat.lens", placeholder = ".context/explainer/placeholders/singlet-flat.lens", label = "Single lens, flat front" }
-singlet_best = { file = "lenses/explainer/03-singlet-best.lens", placeholder = ".context/explainer/placeholders/singlet-best.lens", label = "Single lens, best form" }
-achromat = { file = "lenses/explainer/04-achromat.lens", placeholder = ".context/explainer/placeholders/achromat.lens", label = "Achromat" }
-landscape = { file = "lenses/explainer/05-landscape.lens", placeholder = ".context/explainer/placeholders/landscape.lens", label = "Landscape lens (Wollaston, Chevalier)" }
-rr = { file = "lenses/explainer/06-rapid-rectilinear.lens", placeholder = ".context/explainer/placeholders/rr.lens", label = "Rapid Rectilinear (1866)" }
-triplet = { file = "lenses/explainer/07-cooke-triplet.lens", placeholder = "lenses/cooke-triplet.lens", label = "Cooke triplet (1893)" }
-triplet_f2 = { file = "lenses/explainer/08-triplet-f2.lens", placeholder = ".context/explainer/placeholders/triplet-f2.lens", label = "Triplet at f/2" }
-gauss4 = { file = "lenses/explainer/09-clark-gauss.lens", placeholder = "lenses/double-gauss.lens", label = "Four-element Gauss (Clark, 1888)" }
-planar = { file = "lenses/explainer/10-planar.lens", placeholder = "lenses/double-gauss.lens", label = "Planar (Rudolph, 1896)" }
-dgauss = { file = "lenses/explainer/11-double-gauss.lens", placeholder = "lenses/double-gauss.lens", label = "Double Gauss" }
+singlet = { file = "lenses/explainer/01-singlet.lens", label = "Single lens, equiconvex" }
+flat = { file = "lenses/explainer/02b-flat-front.lens", label = "Single lens, flat front" }
+best = { file = "lenses/explainer/02-best-form.lens", label = "Single lens, best form" }
+achromat = { file = "lenses/explainer/04-achromat.lens", label = "Cemented achromat" }
+landscape = { file = "lenses/explainer/05-landscape.lens", label = "Landscape lens (Wollaston, 1812)" }
+rr = { file = "lenses/explainer/06-rapid-rectilinear.lens", label = "Rapid Rectilinear (1866)" }
+triplet = { file = "lenses/explainer/07-triplet.lens", label = "Cooke triplet (Taylor, 1893)" }
+triplet_f2 = { file = "lenses/explainer/08-triplet-f2.lens", label = "Triplet redesigned for f/2" }
+clark = { file = "lenses/explainer/09-clark.lens", label = "Clark (1888)" }
+planar = { file = "lenses/explainer/10-planar.lens", label = "Planar (Rudolph, 1896)" }
+dgauss = { file = "lenses/explainer/11b-double-gauss.lens", label = "Double Gauss" }
 summilux = { file = "lenses/summilux-50-asph.lens", label = "Leica Summilux 50 f/1.4 ASPH (reconstruction)" }
 
-# The recap: every design with the idea it added.
+# The recap: each design with the idea it added.
 [[recap]]
-lens = "singlet"
-label = "one lens"
-tool = "the start"
-[[recap]]
-lens = "singlet_best"
+lens = "best"
 label = "best-form singlet"
 tool = "bend the glass"
 [[recap]]
@@ -94,30 +90,35 @@ lens = "triplet"
 label = "Cooke triplet"
 tool = "negative lens inside"
 [[recap]]
-lens = "gauss4"
-label = "Clark's Gauss"
-tool = "split, curl around the stop"
+lens = "triplet_f2"
+label = "triplet at f/2"
+tool = "out of freedom"
+[[recap]]
+lens = "clark"
+label = "Clark"
+tool = "curl around the stop"
 [[recap]]
 lens = "planar"
 label = "Planar"
-tool = "thick cemented menisci"
+tool = "buried cemented surface"
 [[recap]]
 lens = "dgauss"
 label = "double Gauss"
-tool = "fine-tune each half"
+tool = "break the symmetry"
 
 # ---------------------------------------------------------------- 0 Hook
 [[chapter]]
 id = "hook"
 title = ""
 narration = """This picture was taken through one piece of glass. This one, through six.
-Same scene, same focal length. Why does a sharp picture take six?
+Same scene, same focal length. Why does a sharp picture take six pieces of glass?
 Let's build a lens from scratch, and find out."""
 scene = "real"
 lens = "dgauss"
-fstop = 4
+fstop = 2
 full = 1
 split_lens = "singlet"
+split_fstop = 4
 split = 1
 diagram = false
 scoreboard = false
@@ -137,10 +138,11 @@ id = "job"
 title = "The job"
 number = 1
 narration = """A lens has one job: every ray from a point in the scene must land on one point on the sensor.
-Every way of missing is an aberration, and there are seven classic ones. Here's our scoreboard."""
+There are seven classic ways to miss: the aberrations.
+This scoreboard measures each one on the sensor, in thousandths of a millimetre. Green means smaller than a pixel."""
 scene = "lesson"
 lens = "dgauss"
-fstop = 4
+fstop = 2
 split = 0
 fields = [0.0]
 rays = 11
@@ -164,12 +166,12 @@ at = "@seven-0.2"
 scoreboard = true
 
 [[chapter.key]]
-at = "@scoreboard"
+at = "@Green"
 toolbox = true
 
 [[chapter.note]]
 at = "@one#2"
-until = "@Every#2"
+until = "@seven"
 on = "diagram"
 shape = "circle"
 pos = [0.0, 0.0]
@@ -178,12 +180,29 @@ text = "one point"
 text_at = [-14.0, 10.0]
 
 [[chapter.note]]
-at = "@scoreboard"
-until = "end"
+at = "@aberrations"
+until = "@thousandths"
 on = "scoreboard"
 shape = "box"
 pos = [0.135, 0.42]
 r = [0.115, 0.29]
+
+[[chapter.note]]
+at = "@thousandths"
+until = "@Green"
+on = "scoreboard"
+shape = "label"
+pos = [0.5, 0.05]
+text = "µm = thousandths of a mm"
+
+[[chapter.note]]
+at = "@Green"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.93, 0.43]
+r = [0.065, 0.27]
+color = "green"
 
 # ---------------------------------------------------------------- 2 One lens
 [[chapter]]
@@ -191,7 +210,8 @@ id = "one-lens"
 title = "One lens"
 number = 2
 narration = """Start with the simplest lens: one bulging piece of glass, at f/4.
-The picture is soft and glowing. Zoom in on the focus: rays through the edge of the lens cross too early.
+The picture is soft and glowing, and the corners are a smear.
+Zoom in on the focus: rays through the edge of the lens cross too early.
 A spherical surface bends edge rays too much. That's spherical aberration."""
 lens = "singlet"
 fstop = 4
@@ -208,12 +228,22 @@ text = "spherical aberration"
 
 [[chapter.note]]
 at = "@glowing"
-until = "@Zoom"
+until = "@corners"
 on = "centre"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
 text = "glow"
+
+[[chapter.note]]
+at = "@smear"
+until = "@Zoom"
+on = "corner"
+shape = "box"
+pos = [0.5, 0.5]
+r = [0.47, 0.45]
+text = "smear"
+text_at = [0.5, 0.15]
 
 [[chapter.note]]
 at = "@edge"
@@ -229,81 +259,143 @@ at = "@spherical#2"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.21]
-r = [0.47, 0.045]
+pos = [0.5, 0.208]
+r = [0.49, 0.048]
 
 # ---------------------------------------------------------------- 3 Bend it
 [[chapter]]
 id = "bend"
 title = "Bend it"
 number = 3
-narration = """The same focal length can be made in many shapes.
-Bend it this way, and it gets worse.
+narration = """The same focal length comes in many shapes.
+Bend the lens this way, and spherical aberration gets almost three times worse.
 Bend it the other way, and both surfaces share the work, each bending light gently.
-Spherical aberration drops [by a third]. Remember that: gentle bends, small errors."""
+Gentle bends, small errors: remember that.
+But look at the picture. It hardly improved. Something else is blurring it."""
 focus_zoom = false
 bending = true
-tail = 1.4
+tail = 1.2
 tool = "bend the glass"
+tool_at = "@Gentle"
 
 [[chapter.key]]
 at = "@this"
 dur = 2.0
-lens = "singlet_flat"
+lens = "flat"
 morph = true
 
 [[chapter.key]]
 at = "@other"
 dur = 3.0
-lens = "singlet_best"
+lens = "best"
 morph = true
 
 [[chapter.tag]]
 at = "@other"
 kind = "fix"
-text = "bend the lens"
+text = "bend the glass"
 
 [[chapter.note]]
 at = "@worse"
 until = "@other"
-on = "view"
-shape = "label"
-pos = [0.5, 0.3]
-text = "worse"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.208]
+r = [0.49, 0.048]
 color = "red"
 
 [[chapter.note]]
 at = "@share"
-until = "end"
+until = "@Gentle"
 on = "diagram"
 shape = "arrow"
-pos = [-60.0, 22.0]
-to = [-49.0, 10.0]
+pos = [-62.0, 20.0]
+to = [-50.0, 8.5]
 text = "both surfaces bend"
 
-# ---------------------------------------------------------------- 4 Stop down
+[[chapter.note]]
+at = "@hardly"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.838]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@Something"
+until = "end"
+on = "centre"
+shape = "circle"
+pos = [0.765, 0.5]
+r = [0.12, 0.18]
+
+# ---------------------------------------------------------------- 4 Colour
+[[chapter]]
+id = "colour"
+title = "Colour"
+number = 4
+narration = """Glass bends blue light more than red, so every colour comes to focus at its own distance:
+blue almost a millimetre in front of red.
+That coloured haze is most of our blur. It's called axial chromatic aberration."""
+bending = false
+by_wavelength = true
+focus_zoom = true
+tail = 1.4
+
+[[chapter.tag]]
+at = "@axial"
+kind = "problem"
+text = "axial colour"
+
+[[chapter.note]]
+at = "@millimetre"
+until = "end"
+on = "view"
+shape = "label"
+pos = [0.32, 0.27]
+text = "blue focuses first"
+color = "blue"
+
+[[chapter.note]]
+at = "@haze"
+until = "end"
+on = "centre"
+shape = "circle"
+pos = [0.765, 0.5]
+r = [0.12, 0.18]
+text = "coloured haze"
+
+[[chapter.note]]
+at = "@axial"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.597]
+r = [0.49, 0.048]
+
+# ---------------------------------------------------------------- 5 Stop down
 [[chapter]]
 id = "stop-down"
 title = "Stop down"
-number = 4
-narration = """The crude fix: use only the middle of the lens.
-At f/16, the glow is gone, but so is most of the light:
-one-eighth of a second instead of one-hundred-twenty-fifth.
-And even now, the centre isn't clean."""
-lens = "singlet_best"
-bending = false
+number = 5
+narration = """The crude fix: block the edge of the lens.
+At f/16, every blur shrinks, colour included, and the centre is sharp.
+But we let in sixteen times less light: an eighth of a second instead of a hundred-twenty-fifth.
+And the corners are still a mess."""
+by_wavelength = false
+focus_zoom = false
 dim_ref = 4
 dim = 1
 tail = 1.2
 tool = "stop down (costs light)"
 
 [[chapter.key]]
-at = "@middle"
+at = "@block"
 dur = 2.5
 fstop = 16
 
 [[chapter.key]]
-at = "@one-eighth"
+at = "@eighth"
 dur = 1.5
 dim = 0
 
@@ -313,71 +405,44 @@ kind = "fix"
 text = "stop down"
 
 [[chapter.note]]
-at = "@light"
-until = "@centre"
+at = "@sharp"
+until = "@sixteen"
+on = "centre"
+shape = "circle"
+pos = [0.236, 0.5]
+r = [0.2, 0.3]
+text = "sharp"
+color = "green"
+
+[[chapter.note]]
+at = "@sixteen"
+until = "@corners"
 on = "hud"
 shape = "box"
 pos = [0.625, 0.5]
 r = [0.12, 0.42]
 
 [[chapter.note]]
-at = "@centre"
+at = "@corners"
 until = "end"
-on = "centre"
-shape = "circle"
-pos = [0.236, 0.5]
-r = [0.2, 0.3]
-
-# ---------------------------------------------------------------- 5 Colour
-[[chapter]]
-id = "colour"
-title = "Colour"
-number = 5
-narration = """Glass bends blue light more than red, so each colour focuses at a different distance.
-Stopping down can't fix that."""
-by_wavelength = true
-focus_zoom = true
-dim = 0
-tail = 1.6
-
-[[chapter.key]]
-at = 0
-dur = 1.2
-fstop = 4
-
-[[chapter.tag]]
-at = "@colour"
-kind = "problem"
-text = "axial colour"
-
-[[chapter.note]]
-at = "@different"
-until = "end"
-on = "view"
-shape = "label"
-pos = [0.3, 0.25]
-text = "blue focuses first"
-color = "blue"
-
-[[chapter.note]]
-at = "@Stopping"
-until = "end"
-on = "centre"
-shape = "circle"
-pos = [0.765, 0.5]
-r = [0.12, 0.18]
-text = "colour fringe"
+on = "corner"
+shape = "box"
+pos = [0.5, 0.5]
+r = [0.47, 0.45]
+color = "red"
 
 # ---------------------------------------------------------------- 6 Two glasses
 [[chapter]]
 id = "two-glasses"
 title = "Two glasses"
 number = 6
-narration = """The fix, from the 1750s: cement a weak negative lens of flint glass to the crown.
-Flint spreads colours far more, so a weak flint cancels the colour of a strong crown, while most of the focusing power survives.
-Two glasses also cancel spherical aberration, so we can open up to f/8.
-The centre is sharp. Now look at the corners."""
+narration = """The clever fix, from the 1750s: cement a weak negative lens of flint glass to the crown.
+Flint spreads colours much more, so a weak flint cancels the colour of a strong crown, while most of the focusing power survives.
+The pair cancels spherical aberration too.
+At f/8 the centre is perfectly sharp, with four times the light of f/16. Now look at the corners."""
 lens = "achromat"
+fstop = 8
+dim = 0
 tail = 1.2
 tool = "two glasses"
 
@@ -386,23 +451,38 @@ at = "@flint"
 highlight = 1
 
 [[chapter.key]]
-at = "@Two"
+at = "@pair"
 highlight = -1
 
-[[chapter.key]]
-at = "@open"
-dur = 2.0
-fstop = 8
-
-[[chapter.key]]
-at = "@open"
-by_wavelength = false
-focus_zoom = false
-
 [[chapter.tag]]
-at = "@fix"
+at = "@clever"
 kind = "fix"
-text = "achromat: crown + flint"
+text = "two glasses: crown + flint"
+
+[[chapter.note]]
+at = "@cancels"
+until = "@pair"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.597]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@perfectly"
+until = "@corners"
+on = "centre"
+shape = "circle"
+pos = [0.5, 0.5]
+r = [0.45, 0.44]
+color = "green"
+
+[[chapter.note]]
+at = "@four"
+until = "@corners"
+on = "hud"
+shape = "box"
+pos = [0.375, 0.5]
+r = [0.12, 0.42]
 
 [[chapter.note]]
 at = "@corners"
@@ -410,7 +490,7 @@ until = "end"
 on = "corner"
 shape = "box"
 pos = [0.5, 0.5]
-r = [0.48, 0.46]
+r = [0.47, 0.45]
 
 # ---------------------------------------------------------------- 7 Off-axis
 [[chapter]]
@@ -418,62 +498,67 @@ id = "off-axis"
 title = "Off-axis"
 number = 7
 narration = """Light from the edge of the frame meets the lens at an angle, and sees a lopsided lens.
-Stars grow comet tails, that's coma, and the sharp image doesn't lie on the flat sensor but on a curved bowl.
-Focus the corners, and the centre goes soft."""
+That gives points comet tails: coma. Here it's small.
+Much worse: lines pointing at the centre and lines across them focus at different distances. That's astigmatism.
+And the sharpest image doesn't lie on the flat sensor, but on a curved bowl:
+no single focus is sharp everywhere."""
 fields = [0.0, 1.0]
-tail = 2.0
+tail = 1.6
 
 [[chapter.key]]
-at = "@bowl-0.3"
+at = "@sharpest"
 field_curves = true
-
-[[chapter.key]]
-at = "@Focus"
-dur = 1.5
-offset = "corner"
-
-[[chapter.key]]
-at = "end-0.6"
-dur = 0.6
-offset = 0
 
 [[chapter.tag]]
 at = "@coma"
 kind = "problem"
-text = "coma, astigmatism"
+text = "coma"
 
 [[chapter.tag]]
-at = "@curved"
+at = "@astigmatism"
 kind = "problem"
-text = "field curvature"
+text = "astigmatism"
+
+[[chapter.tag]]
+at = "@bowl"
+kind = "problem"
+text = "curved field"
 
 [[chapter.note]]
-at = "@comet"
-until = "@curved"
-on = "corner"
-shape = "circle"
-pos = [0.765, 0.5]
-r = [0.18, 0.27]
-text = "comet tail"
+at = "@coma"
+until = "@Much"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.286]
+r = [0.49, 0.048]
 
 [[chapter.note]]
-at = "@soft"
+at = "@astigmatism"
+until = "@bowl"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.364]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@bowl"
 until = "end"
-on = "centre"
-shape = "circle"
-pos = [0.236, 0.5]
-r = [0.2, 0.3]
-text = "soft"
+on = "diagram"
+shape = "arrow"
+pos = [-22.0, 21.0]
+to = [-4.8, 14.0]
+text = "sharpest image"
 
 # ---------------------------------------------------------------- 8 Move the stop
 [[chapter]]
 id = "move-stop"
 title = "Move the stop"
 number = 8
-narration = """In 1812, William Wollaston found a trick: put the aperture in front of the lens, and bend the lens into a meniscus.
-Each point of the field now uses its own part of the lens, and coma and the curved field nearly vanish.
-Lenses like this photographed the world for decades, at f/[14]."""
-tail = 1.4
+narration = """William Wollaston's trick, from 1812: put the aperture in front of the lens, and bend the lens into a meniscus.
+Each point of the field now passes through its own part of the lens, and the corners snap into focus.
+The price: it only works at f/14.
+Lenses like this photographed the world for decades."""
+tail = 1.2
 tool = "move the stop"
 
 [[chapter.key]]
@@ -484,7 +569,7 @@ morph = true
 fstop = 14
 
 [[chapter.key]]
-at = "@vanish-1"
+at = "@Lenses"
 field_curves = false
 
 [[chapter.tag]]
@@ -494,70 +579,131 @@ text = "move the stop"
 
 [[chapter.note]]
 at = "@own"
-until = "@coma"
+until = "@snap"
 on = "diagram"
 shape = "arrow"
-pos = [-80.0, -20.0]
-to = [-58.0, -6.0]
-text = "a different part per field"
+pos = [-75.0, -20.0]
+to = [-47.0, -5.0]
+text = "its own part of the lens"
+
+[[chapter.note]]
+at = "@snap"
+until = "@price"
+on = "corner"
+shape = "box"
+pos = [0.5, 0.5]
+r = [0.47, 0.45]
+color = "green"
+
+[[chapter.note]]
+at = "@price"
+until = "end"
+on = "hud"
+shape = "box"
+pos = [0.375, 0.5]
+r = [0.12, 0.42]
 
 # ---------------------------------------------------------------- 9 Distortion
 [[chapter]]
 id = "distortion"
 title = "Distortion"
 number = 9
-narration = """But look at the straight lines: they bow.
-With the stop in front, light from the edges crosses the lens off-centre and is bent more.
-That's [barrel] distortion: fine for trees, fatal for buildings."""
-tail = 1.6
+narration = """But look at the grid. The straight lines bow outwards.
+With the stop in front, light from the edges crosses the lens off-centre, and is squeezed inwards.
+Almost four percent of barrel distortion: fine for trees, fatal for buildings."""
+tail = 1.4
 
 [[chapter.key]]
 at = "@straight"
 ideal_grid = true
 
 [[chapter.tag]]
-at = "@distortion"
+at = "@barrel"
 kind = "problem"
 text = "distortion"
 
 [[chapter.note]]
 at = "@bow"
-until = "end"
+until = "@barrel"
 on = "render"
 shape = "circle"
-pos = [0.08, 0.5]
-r = [0.06, 0.375]
+pos = [0.06, 0.5]
+r = [0.05, 0.38]
 text = "bowed"
+
+[[chapter.note]]
+at = "@squeezed"
+until = "end"
+on = "render"
+shape = "arrow"
+pos = [0.985, 0.08]
+to = [0.93, 0.13]
+
+[[chapter.note]]
+at = "@percent"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.519]
+r = [0.49, 0.048]
 
 # ---------------------------------------------------------------- 10 Symmetry
 [[chapter]]
 id = "symmetry"
 title = "Symmetry"
 number = 10
-narration = """The answer is symmetry. Put a mirror copy behind the stop: whatever the front half distorts, the back half undoes.
-Coma and lateral colour cancel the same way.
-This is the Rapid Rectilinear of 1866: straight lines, at f/8."""
-lens = "rr"
-fstop = 8
+narration = """The answer is symmetry. Put a mirror copy of the lens behind the stop.
+Whatever the front half distorts, the back half undoes, and lateral colour cancels the same way.
+This is the Rapid Rectilinear of 1866: straight lines, at f/8, three times faster than the landscape lens."""
 tail = 1.4
 tool = "symmetry"
 
 [[chapter.key]]
-at = "@straight"
+at = "@mirror"
+dur = 0
+lens = "rr"
+fstop = 8
+
+[[chapter.key]]
+at = "end-0.5"
 ideal_grid = false
 
 [[chapter.tag]]
 at = "@symmetry"
 kind = "fix"
-text = "symmetry about the stop"
+text = "symmetry"
 
 [[chapter.note]]
-at = "@mirror"
-until = "@Coma"
+at = "@mirror+0.4"
+until = "@Whatever"
 on = "diagram"
 shape = "label"
-pos = [-56.0, 16.0]
+pos = [-51.0, 15.0]
 text = "mirror image"
+
+[[chapter.note]]
+at = "@undoes"
+until = "@lateral"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.519]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@lateral"
+until = "@Rapid"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.675]
+r = [0.49, 0.048]
+
+[[chapter.note]]
+at = "@three"
+until = "end"
+on = "hud"
+shape = "box"
+pos = [0.375, 0.5]
+r = [0.12, 0.42]
 
 # ---------------------------------------------------------------- 11 Petzval
 [[chapter]]
@@ -566,32 +712,24 @@ title = "The curved field"
 number = 11
 narration = """One error survives everything we've tried: the curved field.
 Joseph Petzval showed that it depends only on the power and the glass of each element, not on its shape or position.
-Every positive lens curves the field. Only a negative lens can flatten it, but negative lenses also undo the focusing."""
+Every positive lens curves the field. Only a negative lens can flatten it,
+but a negative lens also undoes the focusing."""
 field_curves = true
 tail = 1.4
-
-[[chapter.key]]
-at = "@curved"
-dur = 1.5
-offset = "corner"
-
-[[chapter.key]]
-at = "@Joseph"
-dur = 1.0
-offset = 0
 
 [[chapter.tag]]
 at = "@curved"
 kind = "problem"
-text = "field curvature"
+text = "curved field"
 
 [[chapter.note]]
-at = "@curved"
+at = "@Every#2"
 until = "end"
-on = "scoreboard"
-shape = "box"
-pos = [0.5, 0.44]
-r = [0.47, 0.045]
+on = "view"
+shape = "label"
+pos = [0.5, 0.25]
+text = "Petzval: set by power and glass"
+color = "white"
 
 # ---------------------------------------------------------------- 12 Triplet
 [[chapter]]
@@ -600,8 +738,8 @@ title = "The Cooke triplet"
 number = 12
 narration = """In 1893, Dennis Taylor found the way out: put a strong negative lens between two positive ones, where the beam is narrow.
 There it costs little focusing power, but still counts fully against the curved field.
-Three elements, eight curvatures and spacings, just enough to tame all seven errors.
-The Cooke triplet: sharp to the corners at f/3.5, [5 times] faster than the Rapid Rectilinear."""
+Six curvatures and two spacings: just enough freedom to balance all seven errors.
+The Cooke triplet: sharp across the frame at f/3.5, five times faster than the Rapid Rectilinear."""
 lens = "triplet"
 fstop = 3.5
 field_curves = false
@@ -620,12 +758,12 @@ beam = true
 highlight = 1
 
 [[chapter.key]]
-at = "@Three"
+at = "@Six"
 beam = false
 highlight = -1
 
 [[chapter.key]]
-at = "@Three"
+at = "@Six"
 dur = 1.2
 diagram_zoom = 1
 
@@ -636,91 +774,187 @@ text = "negative lens inside"
 
 [[chapter.note]]
 at = "@narrow"
-until = "@Three"
+until = "@Six"
 on = "diagram"
 shape = "arrow"
-pos = [-30.0, 12.0]
-to = [-48.0, 5.0]
+pos = [-32.0, 12.0]
+to = [-50.0, 5.0]
 text = "narrow beam"
+
+[[chapter.note]]
+at = "@sharp"
+until = "@five"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.875]
+r = [0.49, 0.088]
+color = "green"
+
+[[chapter.note]]
+at = "@five"
+until = "end"
+on = "hud"
+shape = "box"
+pos = [0.375, 0.5]
+r = [0.12, 0.42]
 
 # ---------------------------------------------------------------- 13 Triplet at f/2
 [[chapter]]
 id = "triplet-f2"
 title = "Pushing the triplet"
 number = 13
-narration = """Push the triplet to f/2, and it falls apart.
-With a big aperture, higher-order errors appear that the seven classic ones don't describe,
-and three thin lenses have no freedom left to fight them."""
+narration = """Now redesign the triplet for f/2. The glow is back.
+With the bigger aperture, spherical aberration and coma grow faster than three lenses can balance them.
+The triplet has run out of freedom."""
 lens = "triplet_f2"
 fstop = 2
 tail = 1.6
 
 [[chapter.tag]]
-at = "@apart"
+at = "@freedom"
 kind = "problem"
-text = "higher-order aberrations"
+text = "out of freedom"
 
 [[chapter.note]]
-at = "@higher"
+at = "@glow"
+until = "@spherical"
+on = "centre"
+shape = "circle"
+pos = [0.765, 0.5]
+r = [0.12, 0.18]
+text = "glow"
+
+[[chapter.note]]
+at = "@spherical"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.877]
-r = [0.47, 0.085]
-text = "measured"
+pos = [0.5, 0.247]
+r = [0.49, 0.088]
 
-# ---------------------------------------------------------------- 14 Split and curl
+# ---------------------------------------------------------------- 14 Curl around the stop
 [[chapter]]
-id = "split-curl"
-title = "Split and curl"
+id = "curl"
+title = "Curl around the stop"
 number = 14
-narration = """So split the negative lens in two, and put the halves on either side of the stop, curled around it.
-The design is symmetric again, so coma, distortion and lateral colour cancel for free,
-and oblique rays meet every surface almost head-on. Alvan Clark patented this in 1888."""
-lens = "gauss4"
-fstop = 2.8
-tail = 1.2
-tool = "split and curl around the stop"
+narration = """A different shape: two positive lenses outside, two negative menisci inside, all curled around the stop,
+so every surface meets the light almost head-on.
+Alvan Clark patented this in 1888, five years before the triplet.
+Our version uses one glass per element, and the colour fringes are back."""
+lens = "clark"
+fstop = 4
+tail = 1.4
+tool = "curl around the stop"
 
 [[chapter.tag]]
-at = "@split"
+at = "@curled"
 kind = "fix"
-text = "split, curl around the stop"
+text = "curl around the stop"
 
-# ---------------------------------------------------------------- 15 Thick menisci
+[[chapter.note]]
+at = "@curled"
+until = "@Alvan"
+on = "diagram"
+shape = "label"
+pos = [-50.0, 15.0]
+text = "menisci curled around the stop"
+
+[[chapter.note]]
+at = "@fringes"
+until = "end"
+on = "centre"
+shape = "circle"
+pos = [0.765, 0.5]
+r = [0.12, 0.18]
+text = "colour fringe"
+
+[[chapter.note]]
+at = "@colour"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.597]
+r = [0.49, 0.048]
+
+# ---------------------------------------------------------------- 15 Buried surface
 [[chapter]]
 id = "planar"
-title = "Thick cemented menisci"
+title = "The buried surface"
 number = 15
-narration = """Paul Rudolph's Planar of 1896 made the inner menisci thick, cemented doublets:
-the buried glue surface corrects colour without disturbing the outer curves, and the thick glass flattens the field."""
+narration = """Paul Rudolph's Planar of 1896 cements a flint to each inner meniscus.
+The buried glue surface fixes the colour without changing the curves the outside needs, and the lens works at f/2.8.
+But the corners are soft: for a distant subject, a symmetric lens no longer cancels its coma."""
 lens = "planar"
 fstop = 2.8
-tail = 1.2
-tool = "thick cemented menisci"
+tail = 1.4
+tool = "buried cemented surface"
+
+[[chapter.key]]
+at = "@cements"
+highlight = [2, 3]
+
+[[chapter.key]]
+at = "@But"
+highlight = -1
 
 [[chapter.tag]]
-at = "@thick"
+at = "@buried"
 kind = "fix"
-text = "thick cemented doublets"
+text = "buried cemented surface"
+
+[[chapter.note]]
+at = "@glue"
+until = "@But"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.597]
+r = [0.49, 0.048]
+color = "green"
+
+[[chapter.note]]
+at = "@corners"
+until = "end"
+on = "corner"
+shape = "box"
+pos = [0.5, 0.5]
+r = [0.47, 0.45]
+color = "red"
+
+[[chapter.note]]
+at = "@coma"
+until = "end"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.286]
+r = [0.49, 0.048]
 
 # ---------------------------------------------------------------- 16 Double Gauss
 [[chapter]]
 id = "double-gauss"
 title = "The double Gauss"
 number = 16
-narration = """Tune the two halves separately, and you get the double Gauss: six elements, sharp at f/2,
-sixteen times faster than the Rapid Rectilinear.
-Almost every fast fifty of the last hundred years is built on it."""
+narration = """So break the symmetry: tune the front and back halves separately, for a distant subject.
+That's the double Gauss, as Horace Lee shaped it in 1920.
+Six elements, sharp from centre to corner at f/2: sixteen times faster than the Rapid Rectilinear.
+Nearly every fast fifty since is built on it."""
 lens = "dgauss"
 fstop = 2
 tail = 1.6
-tool = "fine-tune each half"
+tool = "break the symmetry"
 
 [[chapter.tag]]
-at = "@Tune"
+at = "@break"
 kind = "fix"
-text = "fine-tune each half"
+text = "break the symmetry"
+
+[[chapter.note]]
+at = "@sharp"
+until = "@sixteen"
+on = "scoreboard"
+shape = "box"
+pos = [0.5, 0.875]
+r = [0.49, 0.088]
+color = "green"
 
 [[chapter.note]]
 at = "@sixteen"
@@ -736,7 +970,7 @@ id = "recap"
 title = "From one lens to six"
 number = 17
 narration = """From one lens to six: bend the glass, combine two glasses, move the stop, use symmetry,
-fight the curved field with a negative lens, and give every surface less work.
+flatten the field with a negative lens, curl the surfaces around the stop, bury the colour correction, and tune each half.
 Each step solved one problem, and revealed the next."""
 tail = 1.4
 
@@ -752,12 +986,13 @@ recap = false
 [[chapter]]
 id = "outro"
 title = ""
-narration = """Add aspheres and exotic glass, and you get lenses like this Summilux at f/1.4.
+narration = """Add aspherical surfaces and exotic glasses, and you get lenses like this Summilux, at f/1.4.
 Same ideas, finer tuning."""
 scene = "real"
 lens = "dgauss"
-fstop = 4
+fstop = 2
 split_lens = "singlet"
+split_fstop = 4
 split = 0.5
 full = 1
 diagram = false
