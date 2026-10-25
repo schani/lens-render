@@ -123,10 +123,14 @@ use eframe::egui_wgpu;
 
 pub fn run(file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Result<()> {
     let options = eframe::NativeOptions {
-        // 16:9 when recording a demo.
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(if std::env::var_os("LENS_VIEWER_DEMO").is_some() { [1600.0, 900.0] } else { [1500.0, 900.0] })
-            .with_title("lens-render"),
+        // A demo records at 16:9 and stays on top: macOS stops redrawing
+        // covered windows, which would stall the recording.
+        viewport: if std::env::var_os("LENS_VIEWER_DEMO").is_some() {
+            egui::ViewportBuilder::default().with_inner_size([1600.0, 900.0]).with_window_level(egui::WindowLevel::AlwaysOnTop)
+        } else {
+            egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0])
+        }
+        .with_title("lens-render"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: egui_wgpu::WgpuConfiguration {
             wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
