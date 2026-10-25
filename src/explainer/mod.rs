@@ -98,12 +98,15 @@ pub struct Note {
     until: Option<f64>,
     on: String,
     shape: String,
+    #[serde(default)]
     pos: [f64; 2],
     to: Option<[f64; 2]>,
     r: Option<[f64; 2]>,
     text: Option<String>,
     text_at: Option<[f64; 2]>,
     color: Option<String>,
+    /// On the scoreboard: box these read-outs or groups (comma-separated names).
+    pub row: Option<String>,
 }
 
 /// A PROBLEM / FIX caption.
@@ -138,6 +141,8 @@ struct Chapter {
     #[serde(default)]
     tags: Vec<Tag>,
     toolbox: Option<Tool>,
+    /// A part's title card.
+    part: Option<Tool>,
 }
 
 /// A boolean that fades: on or off since an absolute video time.
@@ -210,6 +215,8 @@ pub struct State {
     split: f64,
     /// 1: the render fills the screen.
     full: f64,
+    /// 1: attention on the centre (corners dimmed).
+    spotlight: f64,
     /// Inset crop centres (normalised image coordinates) and magnification.
     insets: [[f64; 2]; 2],
     inset_zoom: f64,
@@ -249,6 +256,7 @@ impl Default for State {
             split_fstop: None,
             split: 0.0,
             full: 0.0,
+            spotlight: 0.0,
             insets: [[0.531, 0.5], [0.067, 0.92]],
             inset_zoom: 3.0,
             fields: vec![0.0],
@@ -310,10 +318,11 @@ impl State {
                 "dim_ref" => self.dim_ref = num(v).unwrap_or(self.dim_ref),
                 "split" => self.split = num(v).map_or(self.split, |b| lin(self.split, b)),
                 "full" => self.full = num(v).map_or(self.full, |b| lin(self.full, b)),
+                "spotlight" => self.spotlight = num(v).map_or(self.spotlight, |b| lin(self.spotlight, b)),
                 "split_lens" => self.split_lens = v.as_str().map(String::from),
                 "split_fstop" => self.split_fstop = num(v),
                 "inset_zoom" => self.inset_zoom = num(v).map_or(self.inset_zoom, |b| lin(self.inset_zoom, b)),
-                "centre" | "corner" => {
+                "center" | "corner" => {
                     let i = (name == "corner") as usize;
                     if let Some(p) = pair(v) {
                         self.insets[i] = [lin(self.insets[i][0], p[0]), lin(self.insets[i][1], p[1])];

@@ -38,7 +38,7 @@ const GOOD_PCT: f64 = 1.0;
 const FAIR_PCT: f64 = 2.5;
 /// Special views and their titles.
 const VIEWS: [(&str, &str); 3] = [("focus_zoom", "Near the focus"), ("field_curves", "Where the image is sharp"), ("bending", "Spherical aberration vs. shape")];
-const ROWS: [&str; 7] = ["spherical", "coma", "astigmatism", "field curvature", "distortion", "axial colour", "lateral colour"];
+const ROWS: [&str; 7] = ["spherical", "coma", "astigmatism", "field curvature", "distortion", "axial color", "lateral color"];
 /// Shutter speeds in third stops (s).
 const SPEEDS: [(f64, &str); 31] = [
     (1.0 / 1000.0, "1/1000"),
@@ -86,6 +86,37 @@ fn inset_rect(i: usize) -> Rect {
 }
 fn score_rect() -> Rect {
     Rect::from_min_max(pos2(936.0, 248.0), pos2(1576.0, 556.0))
+}
+
+/// Scoreboard groups: header and read-outs (indices: the seven bars, then
+/// centre and corner blur), in display order.
+const GROUPS: [(&str, &[usize]); 2] = [("center: light straight on", &[0, 5, 7]), ("corners: light at an angle", &[1, 2, 3, 4, 6, 8])];
+const ROW_H: f32 = 22.0;
+const GROUP_HEADER: f32 = 19.0;
+
+/// The header and rows of scoreboard group `g`.
+fn group_rect(g: usize) -> Rect {
+    let r = score_rect();
+    let top = r.top() + 66.0 + if g == 1 { GROUP_HEADER + 3.0 * ROW_H + 8.0 } else { 0.0 };
+    Rect::from_min_size(pos2(r.left() + 8.0, top), vec2(r.width() - 16.0, GROUP_HEADER + GROUPS[g].1.len() as f32 * ROW_H))
+}
+
+/// Row of read-out `i` on the scoreboard.
+fn row_rect(i: usize) -> Rect {
+    let (g, k) = GROUPS.iter().enumerate().find_map(|(g, (_, rows))| rows.iter().position(|&x| x == i).map(|k| (g, k))).unwrap_or((0, 0));
+    let h = group_rect(g);
+    Rect::from_min_size(pos2(h.left(), h.top() + GROUP_HEADER + k as f32 * ROW_H), vec2(h.width(), ROW_H))
+}
+
+/// Scoreboard region by name: a read-out (its label) or a group ("center", "corners").
+fn score_region(name: &str) -> Option<Rect> {
+    match name {
+        "center" => Some(group_rect(0)),
+        "corners" => Some(group_rect(1)),
+        "center blur" => Some(row_rect(7)),
+        "corner blur" => Some(row_rect(8)),
+        n => ROWS.iter().position(|r| *r == n).map(row_rect),
+    }
 }
 fn hud_rect() -> Rect {
     Rect::from_min_max(pos2(936.0, 568.0), pos2(1576.0, 616.0))
@@ -224,6 +255,9 @@ impl Explainer {
         if grid_alpha > 0.0 {
             draw_grid(&p.with_clip_rect(rr), rr, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), &main.grid, grid_alpha);
         }
+        if s.spotlight > 0.0 {
+            spotlight(&p, rr, smooth(s.spotlight));
+        }
         if s.split > 0.0 {
             self.draw_split(&p, s);
         }
@@ -238,10 +272,19 @@ impl Explainer {
                 if grid_alpha > 0.0 {
                     draw_grid(&q.with_clip_rect(r), r, uv, &main.grid, grid_alpha);
                 }
+                let later = if i == 1 { smooth(s.spotlight) } else { 0.0 };
+                if later > 0.0 {
+                    q.rect_filled(r, CornerRadius::same(8), Color32::from_rgba_unmultiplied(24, 27, 32, (165.0 * later) as u8));
+                    let mut l = q.clone();
+                    l.multiply_opacity(later);
+                    pill(&l, r.center(), Align2::CENTER_CENTER, "corners: part 2", medium(17.0), TEXT, Color32::from_black_alpha(190));
+                }
                 q.rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, EDGE), StrokeKind::Inside);
-                let label = format!("{} ×{:.0}", if i == 0 { "centre" } else { "corner" }, s.inset_zoom);
+                let label = format!("{} ×{:.0}", if i == 0 { "center" } else { "corner" }, s.inset_zoom);
                 pill(&q, r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &label, medium(14.0), TEXT, Color32::from_black_alpha(170));
                 // Where the inset comes from.
+                let mut q = q.clone();
+                q.multiply_opacity(1.0 - 0.65 * later);
                 let m = Rect::from_min_max(rr.lerp_inside(uv.min.to_vec2()), rr.lerp_inside(uv.max.to_vec2()));
                 q.rect_stroke(m.expand(1.0), CornerRadius::same(2), Stroke::new(3.0, Color32::from_black_alpha(120)), StrokeKind::Middle);
                 q.rect_stroke(m, CornerRadius::same(2), Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
@@ -255,6 +298,7 @@ impl Explainer {
         }
         self.draw_title(&p, ci, t);
         self.draw_tags(&p, ci, t);
+        self.draw_part(&p, ci, t);
 
         let a = s.flag("scoreboard").alpha(now, FADE);
         if a > 0.0 {
@@ -371,6 +415,23 @@ impl Explainer {
         q.galley(pos2(r.left() + 14.0 + badge, r.center().y - g.size().y / 2.0 + 1.0), g, TEXT);
     }
 
+    /// A part's title card, centred on the render for 1.6 s.
+    fn draw_part(&self, p: &Painter, ci: usize, t: f64) {
+        let Some(part) = &self.timeline.chapters[ci].part else { return };
+        let age = t - part.t;
+        if !(0.0..1.6).contains(&age) {
+            return;
+        }
+        let a = smooth(age / 0.3) * (1.0 - smooth((age - 1.25) / 0.35));
+        let mut q = p.clone();
+        q.multiply_opacity(a);
+        let g = q.layout_no_wrap(part.text.clone(), bold(36.0), TEXT);
+        let r = Rect::from_center_size(self.rr.center() + vec2(0.0, (1.0 - a) * 10.0), g.size() + vec2(56.0, 30.0));
+        q.add(egui::epaint::RectShape::filled(r.translate(vec2(0.0, 4.0)), CornerRadius::same(14), Color32::from_black_alpha(110)).with_blur_width(18.0));
+        q.rect(r, CornerRadius::same(14), Color32::from_rgba_premultiplied(13, 16, 21, 235), Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+        q.galley(r.center() - g.size() / 2.0 + vec2(0.0, 1.0), g, TEXT);
+    }
+
     fn draw_tags(&self, p: &Painter, ci: usize, t: f64) {
         let rr = self.rr;
         let mut y = rr.top() + 74.0;
@@ -402,41 +463,46 @@ impl Explainer {
         let shown = self.shown.unwrap_or([0.0; 9]);
         let (x0, x1) = (r.left() + 168.0, r.right() - 84.0);
         let bar_x = |um: f64| x0 + (x1 - x0) * ((um.max(1.0).log10() / 3.0).min(1.0) as f32);
-        let row_h = 24.0;
-        let row_y = |i: usize| r.top() + 52.0 + i as f32 * row_h + if i >= 7 { 26.0 } else { 0.0 };
+        let (top, bottom) = (row_rect(GROUPS[0].1[0]).top(), row_rect(8).bottom());
         // Decades of µm.
         for (um, label) in [(1.0, "1 µm"), (10.0, "10"), (100.0, "100"), (1000.0, "1 mm")] {
             let x = bar_x(um);
-            p.line_segment([pos2(x, row_y(0)), pos2(x, row_y(8) + row_h)], Stroke::new(1.0, EDGE));
-            p.text(pos2(x, row_y(0) - 2.0), Align2::CENTER_BOTTOM, label, regular(12.0), DIM);
+            p.line_segment([pos2(x, top - 18.0), pos2(x, bottom)], Stroke::new(1.0, EDGE));
+            p.text(pos2(x, top - 20.0), Align2::CENTER_BOTTOM, label, regular(12.0), DIM);
         }
-        let sep = row_y(6) + row_h + 4.0;
-        p.line_segment([pos2(r.left() + 18.0, sep), pos2(r.right() - 18.0, sep)], Stroke::new(1.0, EDGE));
-        p.text(pos2(r.left() + 18.0, sep + 4.0), Align2::LEFT_TOP, "white-light blur, RMS radius", regular(13.0), DIM);
         let since = s.flag("scoreboard").since;
-        for i in 0..9 {
-            let y = row_y(i);
-            let a = smooth((now - since - 0.12 * i as f64) / 0.3).max(if s.flag("scoreboard").on { 0.0 } else { 1.0 });
+        // The corner group steps back while the lesson is about the centre.
+        let dim = 1.0 - 0.65 * smooth(s.spotlight);
+        for (g, (header, rows)) in GROUPS.iter().enumerate() {
             let mut q = p.clone();
-            q.multiply_opacity(a);
-            let um = shown[i].exp();
-            let name = if i < 7 { ROWS[i] } else if i == 7 { "centre blur" } else { "corner blur" };
-            q.text(pos2(r.left() + 18.0, y + row_h / 2.0), Align2::LEFT_CENTER, name, if i < 7 { regular(16.0) } else { medium(16.0) }, TEXT);
-            let bar = Rect::from_min_max(pos2(x0, y + 5.0), pos2(bar_x(um).max(x0 + 3.0), y + row_h - 5.0));
-            let c = if i == 4 { grade(um / GOOD, GOOD_PCT, FAIR_PCT) } else { grade(um, GOOD, FAIR) };
-            if i < 7 {
-                q.rect_filled(bar, CornerRadius::same(3), c);
-            } else {
-                q.rect(bar, CornerRadius::same(3), c.gamma_multiply(0.35), Stroke::new(1.5, c), StrokeKind::Inside);
+            q.multiply_opacity(if g == 1 { dim } else { 1.0 });
+            let h = group_rect(g);
+            q.text(pos2(r.left() + 18.0, h.top() + 1.0), Align2::LEFT_TOP, *header, medium(13.0), ACCENT);
+            for (k, &i) in rows.iter().enumerate() {
+                let y = row_rect(i).top();
+                let order = g * 3 + k;
+                let a = smooth((now - since - 0.12 * order as f64) / 0.3).max(if s.flag("scoreboard").on { 0.0 } else { 1.0 });
+                let mut q = q.clone();
+                q.multiply_opacity(a);
+                let um = shown[i].exp();
+                let name = if i < 7 { ROWS[i] } else if i == 7 { "center blur" } else { "corner blur" };
+                q.text(pos2(r.left() + 18.0, y + ROW_H / 2.0), Align2::LEFT_CENTER, name, if i < 7 { regular(15.5) } else { medium(15.5) }, TEXT);
+                let bar = Rect::from_min_max(pos2(x0, y + 5.0), pos2(bar_x(um).max(x0 + 3.0), y + ROW_H - 5.0));
+                let c = if i == 4 { grade(um / GOOD, GOOD_PCT, FAIR_PCT) } else { grade(um, GOOD, FAIR) };
+                if i < 7 {
+                    q.rect_filled(bar, CornerRadius::same(3), c);
+                } else {
+                    q.rect(bar, CornerRadius::same(3), c.gamma_multiply(0.35), Stroke::new(1.5, c), StrokeKind::Inside);
+                }
+                let value = if i == 4 {
+                    format!("{:+.1} %", o.score.bars[4].signum() * um / GOOD).replace('-', "−")
+                } else if um < 9.95 {
+                    format!("{um:.1} µm")
+                } else {
+                    format!("{um:.0} µm")
+                };
+                q.text(pos2(r.right() - 18.0, y + ROW_H / 2.0), Align2::RIGHT_CENTER, value, medium(15.0), c);
             }
-            let value = if i == 4 {
-                format!("{:+.1} %", o.score.bars[4].signum() * um / GOOD).replace('-', "−")
-            } else if um < 9.95 {
-                format!("{um:.1} µm")
-            } else {
-                format!("{um:.0} µm")
-            };
-            q.text(pos2(r.right() - 18.0, y + row_h / 2.0), Align2::RIGHT_CENTER, value, medium(15.0), c);
         }
     }
 
@@ -515,7 +581,7 @@ impl Explainer {
         p.text(area.left_bottom() + vec2(0.0, 4.0), Align2::LEFT_TOP, format!("×{} along, ×{} across", round2(mz), round2(my)), regular(12.0), DIM);
         if !s.by_wavelength {
             p.text(area.right_bottom() + vec2(0.0, 4.0), Align2::RIGHT_TOP, "edge rays", medium(12.0), Color32::from_rgb(255, 120, 80));
-            p.text(area.right_bottom() + vec2(-66.0, 4.0), Align2::RIGHT_TOP, "centre rays", medium(12.0), Color32::from_rgb(140, 210, 255));
+            p.text(area.right_bottom() + vec2(-66.0, 4.0), Align2::RIGHT_TOP, "center rays", medium(12.0), Color32::from_rgb(140, 210, 255));
         } else {
             for (i, name) in ["blue", "green", "red"].iter().enumerate() {
                 p.text(area.right_bottom() + vec2(-46.0 * (2 - i) as f32, 4.0), Align2::RIGHT_TOP, *name, medium(12.0), RGB[i]);
@@ -547,7 +613,7 @@ impl Explainer {
                 p.text(pos, Align2::CENTER_BOTTOM, label, medium(13.0), color);
             }
         }
-        p.text(plot.left_bottom() + vec2(-6.0, 0.0), Align2::RIGHT_BOTTOM, "centre", regular(12.0), DIM);
+        p.text(plot.left_bottom() + vec2(-6.0, 0.0), Align2::RIGHT_BOTTOM, "center", regular(12.0), DIM);
         p.text(plot.left_top() + vec2(-6.0, 0.0), Align2::RIGHT_TOP, "corner", regular(12.0), DIM);
         p.text(plot.left_bottom() + vec2(0.0, 4.0), Align2::LEFT_TOP, format!("−{}", mm(range)), regular(12.0), DIM);
         p.text(plot.right_bottom() + vec2(0.0, 4.0), Align2::RIGHT_TOP, format!("+{}", mm(range)), regular(12.0), DIM);
@@ -692,6 +758,28 @@ impl Images {
             blit(id, sub, sub_uv, 1.0, round);
         }
     }
+}
+
+/// Dims and greys the render outside a feathered central ellipse by `a`.
+fn spotlight(p: &Painter, r: Rect, a: f32) {
+    let (nx, ny) = (48, 32);
+    let mut mesh = egui::Mesh::default();
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let (u, v) = (i as f32 / nx as f32, j as f32 / ny as f32);
+            let d = (((u - 0.5) / 0.2).powi(2) + ((v - 0.5) / 0.24).powi(2)).sqrt();
+            let t = ((d - 0.75) / 0.6).clamp(0.0, 1.0);
+            let alpha = a * 0.65 * t * t * (3.0 - 2.0 * t);
+            mesh.colored_vertex(r.lerp_inside(vec2(u, v)), Color32::from_rgba_unmultiplied(26, 28, 32, (alpha * 255.0) as u8));
+            if i > 0 && j > 0 {
+                let k = (j * (nx + 1) + i) as u32;
+                let w = (nx + 1) as u32;
+                mesh.add_triangle(k - w - 1, k - w, k);
+                mesh.add_triangle(k - w - 1, k, k - 1);
+            }
+        }
+    }
+    p.add(mesh);
 }
 
 /// Undistorted chart grid lines (normalised image coordinates) over region `uv` shown in `r`.
@@ -840,7 +928,7 @@ fn note_space(on: &str, sensor_z: f64, rr: Rect, dr: Rect, zoom: f64) -> Option<
     let rect = |r: Rect| -> (Box<dyn Fn([f64; 2]) -> Pos2>, egui::Vec2) { (Box::new(move |q: [f64; 2]| r.min + vec2(q[0] as f32 * r.width(), q[1] as f32 * r.height())), r.size()) };
     Some(match on {
         "render" => rect(rr),
-        "centre" => rect(inset_rect(0)),
+        "center" => rect(inset_rect(0)),
         "corner" => rect(inset_rect(1)),
         "view" => rect(view_rect()),
         "scoreboard" => rect(score_rect()),
@@ -870,6 +958,18 @@ fn named_color(c: Option<&str>) -> Color32 {
 /// An annotation, drawn on and faded out.
 fn draw_note(p: &Painter, n: &Note, t: f64, o: &Optics, rr: Rect, dr: Rect, zoom: f64) {
     if t < n.t || n.until.is_some_and(|u| t > u + FADE) {
+        return;
+    }
+    if let Some(rows) = &n.row {
+        let a = smooth((t - n.t) / 0.15) * n.until.map_or(1.0, |u| 1.0 - smooth((t - u) / FADE));
+        let mut q = p.clone();
+        q.multiply_opacity(a);
+        let color = named_color(n.color.as_deref());
+        for r in rows.split(',').filter_map(|r| score_region(r.trim())) {
+            let r = r.expand2(vec2(2.0, 1.0));
+            q.rect_stroke(r, CornerRadius::same(5), Stroke::new(6.0, Color32::from_black_alpha(110)), StrokeKind::Middle);
+            q.rect_stroke(r, CornerRadius::same(5), Stroke::new(3.0, color), StrokeKind::Middle);
+        }
         return;
     }
     let Some((at, unit)) = note_space(&n.on, o.lens.sensor_z, rr, dr, zoom) else { return };

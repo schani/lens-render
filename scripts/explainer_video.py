@@ -29,7 +29,7 @@ SCRIPT = os.path.join(ROOT, "explainer", "script.toml")
 VOICE = "TX3LPaxmHKxFdv7VOQHJ"
 MODEL = "eleven_multilingual_v2"
 # Chapter keys that aren't properties.
-CHAPTER_KEYS = {"id", "title", "number", "scene", "lens", "narration", "tail", "dur", "key", "note", "tag", "tool", "tool_at", "set"}
+CHAPTER_KEYS = {"id", "title", "number", "scene", "lens", "narration", "tail", "dur", "key", "note", "tag", "tool", "tool_at", "part", "part_at", "set"}
 
 
 def api_key():
@@ -154,8 +154,9 @@ def timeline(script, only):
             notes.append({**{k: v for k, v in n.items() if k not in ("at", "until", "dur")}, "t": at, "until": until})
         tags = [{"t": clock(g.get("at", 0)), "until": clock(g["until"]) if "until" in g else None, "kind": g["kind"], "text": g["text"]} for g in ch.get("tag", [])]
         tool = {"t": clock(ch.get("tool_at", "end-2.0")), "text": ch["tool"]} if "tool" in ch else None
+        part = {"t": clock(ch.get("part_at", 0)), "text": ch["part"]} if "part" in ch else None
         chapters.append({"id": cid, "title": ch.get("title", ""), "number": ch.get("number", 0), "start": start, "dur": dur,
-                         "set": props, "keys": keys, "notes": notes, "tags": tags, "toolbox": tool})
+                         "set": props, "keys": keys, "notes": notes, "tags": tags, "toolbox": tool, "part": part})
     lenses = {k: {"path": path_of(v, f"lens {k}"), "label": v.get("label", k)} for k, v in script["lenses"].items()}
     scenes = {k: os.path.join(ROOT, v) for k, v in script["scenes"].items()}
     bending = path_of(s["bending"], "bending curve") if "bending" in s else None

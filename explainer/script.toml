@@ -12,12 +12,12 @@
 # [[chapter.key]]   at, dur (or to = time), ease (inout|in|out|linear),
 #                   morph = true (a lens change morphs the prescription
 #                   instead of crossfading), and the properties to animate.
-# [[chapter.note]]  annotation: at, until (or dur), on (render | centre |
+# [[chapter.note]]  annotation: at, until (or dur), on (render | center |
 #                   corner | diagram | view | scoreboard | hud | toolbox |
 #                   screen), shape (circle | arrow | box | label), pos, r
-#                   (radii, normalised like pos; diagram: mm),
+#                   (radii, normalized like pos; diagram: mm),
 #                   to (arrow head), text, text_at, color.
-#                   Coordinates are normalised (x right, y down) except on
+#                   Coordinates are normalized (x right, y down) except on
 #                   the diagram: [mm from the sensor along the axis, mm up].
 # [[chapter.tag]]   at, until, kind (problem | fix), text.
 # tool              toolbox entry, added at tool_at (default "end-2").
@@ -26,18 +26,21 @@
 # "corner": focus the corners), ev, dim (1: darken when stopping down past
 # dim_ref; 0: exposure compensated by the shutter), split_lens, split
 # (divider position; 0 = no split), split_fstop, full (1: render fills the
-# screen), centre / corner (inset crop centres), inset_zoom, fields (ray
+# screen), center / corner (inset crop centers), inset_zoom, fields (ray
 # fans at these fractions of the image diagonal: 0, 0.7, 1), rays,
 # by_wavelength, highlight (glass pieces, 0 = front; -1 none), diagram_zoom
 # (magnification of the cross-section about the sensor), zoom_len /
 # zoom_height (focus zoom ranges in mm, 0 = auto), field_range, and the
 # switches focus_zoom, field_curves, bending, ideal_grid, scoreboard, hud,
-# insets, diagram, beam, recap, toolbox.
+# insets, diagram, beam, recap, toolbox; spotlight (1: corners dimmed).
+# Notes on the scoreboard can box read-outs or groups instead:
+# row = "spherical, coma" (names as shown, or "center" / "corners").
+# part              a part's title card, shown at part_at (default 0).
 #
-# Positions in the lesson scene (render coordinates): centre light
-# [0.562, 0.5], centre star [0.5, 0.5], 0.7-field light [0.85, 0.15], corner
+# Positions in the lesson scene (render coordinates): center light
+# [0.562, 0.5], center star [0.5, 0.5], 0.7-field light [0.85, 0.15], corner
 # light [0.098, 0.92], corner stars [0.036, 0.92] and [0.964, 0.92]. In the
-# centre inset the star is at [0.236, 0.5] and the light at [0.765, 0.5]; the
+# center inset the star is at [0.236, 0.5] and the light at [0.765, 0.5]; the
 # corner inset shows the bottom-right star alone, at [0.765, 0.5].
 #
 # Every number spoken was checked against lenses/explainer/README.md and the
@@ -140,7 +143,10 @@ title = "The job"
 number = 1
 narration = """A lens has one job: every ray from a point in the scene must land on one point on the sensor.
 There are seven classic ways to miss: the aberrations.
-This scoreboard measures each one on the sensor, in thousandths of a millimetre. Green means smaller than a pixel."""
+Two of them happen everywhere, even in the center of the picture, where light comes straight in.
+The other five appear only off-center, where light arrives at an angle.
+This scoreboard measures each one on the sensor, in thousandths of a millimeter. Green means smaller than a pixel.
+We'll fix the center first, then the corners, then make the lens fast."""
 scene = "lesson"
 lens = "dgauss"
 fstop = 2
@@ -183,16 +189,22 @@ text = "one point"
 text_at = [-14.0, 10.0]
 
 [[chapter.note]]
-at = "@aberrations"
-until = "@thousandths"
+at = "@center"
+until = "@other"
 on = "scoreboard"
 shape = "box"
-pos = [0.135, 0.42]
-r = [0.115, 0.29]
+row = "center"
+
+[[chapter.note]]
+at = "@angle"
+until = "@This"
+on = "scoreboard"
+shape = "box"
+row = "corners"
 
 [[chapter.note]]
 at = "@thousandths"
-until = "@Green"
+until = "@Green-0.2"
 on = "scoreboard"
 shape = "label"
 pos = [0.5, 0.05]
@@ -200,11 +212,11 @@ text = "µm = thousandths of a mm"
 
 [[chapter.note]]
 at = "@Green"
-until = "end"
+until = "@We"
 on = "scoreboard"
-shape = "box"
-pos = [0.93, 0.43]
-r = [0.065, 0.27]
+shape = "label"
+pos = [0.5, 0.05]
+text = "green: smaller than a pixel (20 µm)"
 color = "green"
 
 # ---------------------------------------------------------------- 2 One lens
@@ -213,12 +225,19 @@ id = "one-lens"
 title = "One lens"
 number = 2
 narration = """Start with the simplest lens: one bulging piece of glass, at f/4.
-The picture is soft and glowing, and the corners are a smear.
+The corners are a mess, but they have problems of their own; we'll get to them.
+First, the center, where light comes straight in. It's soft and glowing.
 Zoom in on the focus: rays through the edge of the lens cross too early.
 A spherical surface bends edge rays too much. That's spherical aberration."""
 lens = "singlet"
 fstop = 4
 tail = 1.4
+part = "Part 1 · The center"
+
+[[chapter.key]]
+at = "@corners"
+dur = 1.2
+spotlight = 1
 
 [[chapter.key]]
 at = "@Zoom"
@@ -231,22 +250,12 @@ text = "spherical aberration"
 
 [[chapter.note]]
 at = "@glowing"
-until = "@corners"
-on = "centre"
+until = "@Zoom"
+on = "center"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
 text = "glow"
-
-[[chapter.note]]
-at = "@smear"
-until = "@Zoom"
-on = "corner"
-shape = "box"
-pos = [0.5, 0.5]
-r = [0.47, 0.45]
-text = "smear"
-text_at = [0.5, 0.15]
 
 [[chapter.note]]
 at = "@edge"
@@ -262,8 +271,7 @@ at = "@spherical#2"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.208]
-r = [0.49, 0.048]
+row = "spherical"
 
 # ---------------------------------------------------------------- 3 Bend it
 [[chapter]]
@@ -303,8 +311,7 @@ at = "@worse"
 until = "@other"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.208]
-r = [0.49, 0.048]
+row = "spherical"
 color = "red"
 
 [[chapter.note]]
@@ -321,25 +328,24 @@ at = "@hardly"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.838]
-r = [0.49, 0.048]
+row = "center blur"
 
 [[chapter.note]]
 at = "@Something"
 until = "end"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
 
-# ---------------------------------------------------------------- 4 Colour
+# ---------------------------------------------------------------- 4 Color
 [[chapter]]
-id = "colour"
-title = "Colour"
+id = "color"
+title = "Color"
 number = 4
-narration = """Glass bends blue light more than red, so every colour comes to focus at its own distance:
-blue almost a millimetre in front of red.
-That coloured haze is most of our blur. It's called axial chromatic aberration."""
+narration = """Glass bends blue light more than red, so every color comes to focus at its own distance:
+blue almost a millimeter in front of red.
+That colored haze is most of our blur. It's called axial chromatic aberration."""
 bending = false
 by_wavelength = true
 focus_zoom = true
@@ -348,10 +354,10 @@ tail = 1.4
 [[chapter.tag]]
 at = "@axial"
 kind = "problem"
-text = "axial colour"
+text = "axial color"
 
 [[chapter.note]]
-at = "@millimetre"
+at = "@millimeter"
 until = "end"
 on = "view"
 shape = "label"
@@ -362,19 +368,18 @@ color = "blue"
 [[chapter.note]]
 at = "@haze"
 until = "end"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
-text = "coloured haze"
+text = "colored haze"
 
 [[chapter.note]]
 at = "@axial"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.597]
-r = [0.49, 0.048]
+row = "axial color"
 
 # ---------------------------------------------------------------- 5 Stop down
 [[chapter]]
@@ -382,9 +387,8 @@ id = "stop-down"
 title = "Stop down"
 number = 5
 narration = """The crude fix: block the edge of the lens.
-At f/16, every blur shrinks, colour included, and the centre is sharp.
-But we let in sixteen times less light: an eighth of a second instead of a hundred-twenty-fifth.
-And the corners are still a mess."""
+At f/16, every blur shrinks, color included, and the center is sharp.
+But we let in sixteen times less light: an eighth of a second instead of a hundred-twenty-fifth."""
 by_wavelength = false
 focus_zoom = false
 dim_ref = 4
@@ -410,7 +414,7 @@ text = "stop down"
 [[chapter.note]]
 at = "@sharp"
 until = "@sixteen"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.236, 0.5]
 r = [0.2, 0.3]
@@ -419,20 +423,11 @@ color = "green"
 
 [[chapter.note]]
 at = "@sixteen"
-until = "@corners"
+until = "end"
 on = "hud"
 shape = "box"
 pos = [0.625, 0.5]
 r = [0.12, 0.42]
-
-[[chapter.note]]
-at = "@corners"
-until = "end"
-on = "corner"
-shape = "box"
-pos = [0.5, 0.5]
-r = [0.47, 0.45]
-color = "red"
 
 # ---------------------------------------------------------------- 6 Two glasses
 [[chapter]]
@@ -440,14 +435,22 @@ id = "two-glasses"
 title = "Two glasses"
 number = 6
 narration = """The clever fix, from the 1750s: cement a weak negative lens of flint glass to the crown.
-Flint spreads colours much more, so a weak flint cancels the colour of a strong crown, while most of the focusing power survives.
+Flint spreads colors much more, so a weak flint cancels the color of a strong crown, while most of the focusing power survives.
 The pair cancels spherical aberration too.
-At f/8 the centre is perfectly sharp, with four times the light of f/16. Now look at the corners."""
+At f/8 the center is perfectly sharp, with four times the light of f/16.
+The center is solved. Now, the corners."""
 lens = "achromat"
 fstop = 8
 dim = 0
 tail = 1.2
 tool = "two glasses"
+part = "Part 2 · The corners"
+part_at = "@corners"
+
+[[chapter.key]]
+at = "@corners"
+dur = 1.2
+spotlight = 0
 
 [[chapter.key]]
 at = "@flint"
@@ -467,13 +470,12 @@ at = "@cancels"
 until = "@pair"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.597]
-r = [0.49, 0.048]
+row = "axial color"
 
 [[chapter.note]]
 at = "@perfectly"
 until = "@corners"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.5, 0.5]
 r = [0.45, 0.44]
@@ -502,7 +504,7 @@ title = "Off-axis"
 number = 7
 narration = """Light from the edge of the frame meets the lens at an angle, and sees a lopsided lens.
 That gives points comet tails: coma. Here it's small.
-Much worse: lines pointing at the centre and lines across them focus at different distances. That's astigmatism.
+Much worse: lines pointing at the center and lines across them focus at different distances. That's astigmatism.
 And the sharpest image doesn't lie on the flat sensor, but on a curved bowl:
 no single focus is sharp everywhere."""
 fields = [0.0, 1.0]
@@ -527,16 +529,14 @@ at = "@coma"
 until = "@Much"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.286]
-r = [0.49, 0.048]
+row = "coma"
 
 [[chapter.note]]
 at = "@astigmatism"
 until = "@bowl"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.364]
-r = [0.49, 0.048]
+row = "astigmatism"
 
 [[chapter.note]]
 at = "@bowl"
@@ -607,7 +607,7 @@ id = "distortion"
 title = "Distortion"
 number = 9
 narration = """But look at the grid. The straight lines bow outwards.
-With the stop in front, light from the edges crosses the lens off-centre, and is squeezed inwards.
+With the stop in front, light from the edges crosses the lens off-center, and is squeezed inwards.
 Almost four percent of barrel distortion: fine for trees, fatal for buildings."""
 tail = 1.4
 
@@ -642,8 +642,7 @@ at = "@percent"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.519]
-r = [0.49, 0.048]
+row = "distortion"
 
 # ---------------------------------------------------------------- 10 Symmetry
 [[chapter]]
@@ -651,7 +650,7 @@ id = "symmetry"
 title = "Symmetry"
 number = 10
 narration = """The answer is symmetry. Put a mirror copy of the lens behind the stop.
-Whatever the front half distorts, the back half undoes, and lateral colour cancels the same way.
+Whatever the front half distorts, the back half undoes, and lateral color cancels the same way.
 This is the Rapid Rectilinear of 1866: straight lines, at f/8, three times faster than the landscape lens."""
 tail = 1.4
 tool = "symmetry"
@@ -684,16 +683,14 @@ at = "@undoes"
 until = "@lateral"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.519]
-r = [0.49, 0.048]
+row = "distortion"
 
 [[chapter.note]]
 at = "@lateral"
 until = "@Rapid"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.675]
-r = [0.49, 0.048]
+row = "lateral color"
 
 [[chapter.note]]
 at = "@three"
@@ -726,8 +723,7 @@ at = "@astigmatism"
 until = "@Joseph"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.364]
-r = [0.49, 0.048]
+row = "astigmatism"
 
 [[chapter.note]]
 at = "@either"
@@ -802,8 +798,7 @@ at = "@sharp"
 until = "@five"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.875]
-r = [0.49, 0.088]
+row = "center blur, corner blur"
 color = "green"
 
 [[chapter.note]]
@@ -819,12 +814,18 @@ r = [0.12, 0.42]
 id = "triplet-f2"
 title = "Pushing the triplet"
 number = 13
-narration = """Now redesign the triplet for f/2. The glow is back.
+narration = """The triplet handles center and corners at f/3.5. Now make it faster:
+redesign it for f/2, and the glow is back.
 With the bigger aperture, spherical aberration and coma grow faster than three lenses can balance them.
 The triplet has run out of freedom."""
+tail = 1.6
+part = "Part 3 · Speed"
+
+[[chapter.key]]
+at = "@redesign"
+dur = 0
 lens = "triplet_f2"
 fstop = 2
-tail = 1.6
 
 [[chapter.tag]]
 at = "@freedom"
@@ -834,7 +835,7 @@ text = "out of freedom"
 [[chapter.note]]
 at = "@glow"
 until = "@spherical"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
@@ -845,8 +846,7 @@ at = "@spherical"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.247]
-r = [0.49, 0.088]
+row = "spherical, coma"
 
 # ---------------------------------------------------------------- 14 Curl around the stop
 [[chapter]]
@@ -856,7 +856,7 @@ number = 14
 narration = """A different shape: two positive lenses outside, two negative menisci inside, all curled around the stop,
 so every surface meets the light almost head-on.
 Alvan Clark patented this in 1888, five years before the triplet.
-Our version uses one glass per element, and the colour fringes are back."""
+Our version uses one glass per element, and the color fringes are back."""
 lens = "clark"
 fstop = 4
 tail = 1.4
@@ -878,19 +878,18 @@ text = "menisci curled around the stop"
 [[chapter.note]]
 at = "@fringes"
 until = "end"
-on = "centre"
+on = "center"
 shape = "circle"
 pos = [0.765, 0.5]
 r = [0.12, 0.18]
-text = "colour fringe"
+text = "color fringe"
 
 [[chapter.note]]
-at = "@colour"
+at = "@color"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.597]
-r = [0.49, 0.048]
+row = "axial color"
 
 # ---------------------------------------------------------------- 15 Buried surface
 [[chapter]]
@@ -898,7 +897,7 @@ id = "planar"
 title = "The buried surface"
 number = 15
 narration = """Paul Rudolph's Planar of 1896 cements a flint to each inner meniscus.
-The buried glue surface fixes the colour without changing the curves the outside needs, and the lens works at f/2.8.
+The buried glue surface fixes the color without changing the curves the outside needs, and the lens works at f/2.8.
 But the corners are soft: for a distant subject, a symmetric lens no longer cancels its coma."""
 lens = "planar"
 fstop = 2.8
@@ -923,8 +922,7 @@ at = "@glue"
 until = "@But"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.597]
-r = [0.49, 0.048]
+row = "axial color"
 color = "green"
 
 [[chapter.note]]
@@ -941,8 +939,7 @@ at = "@coma"
 until = "end"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.286]
-r = [0.49, 0.048]
+row = "coma"
 
 # ---------------------------------------------------------------- 16 Double Gauss
 [[chapter]]
@@ -951,7 +948,7 @@ title = "The double Gauss"
 number = 16
 narration = """So break the symmetry: tune the front and back halves separately, for a distant subject.
 That's the double Gauss, as Horace Lee shaped it in 1920.
-Six elements, sharp from centre to corner at f/2: sixteen times faster than the Rapid Rectilinear.
+Six elements, sharp from center to corner at f/2: sixteen times faster than the Rapid Rectilinear.
 Nearly every fast fifty since is built on it."""
 lens = "dgauss"
 fstop = 2
@@ -968,8 +965,7 @@ at = "@sharp"
 until = "@sixteen"
 on = "scoreboard"
 shape = "box"
-pos = [0.5, 0.875]
-r = [0.49, 0.088]
+row = "center blur, corner blur"
 color = "green"
 
 [[chapter.note]]
@@ -985,8 +981,9 @@ r = [0.12, 0.42]
 id = "recap"
 title = "From one lens to six"
 number = 17
-narration = """From one lens to six: bend the glass, combine two glasses, move the stop, use symmetry,
-flatten the field with a negative lens, curl the surfaces around the stop, bury the colour correction, and tune each half.
+narration = """From one lens to six. For the center: bend the glass, and combine two glasses.
+For the corners: move the stop, use symmetry, and flatten the field with a negative lens.
+For speed: curl the surfaces around the stop, bury the color correction, and tune each half.
 Each step solved one problem, and revealed the next."""
 tail = 1.4
 
