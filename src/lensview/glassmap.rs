@@ -103,8 +103,11 @@ impl GlassMap {
         if self.dragging && response.dragged() {
             if let Some(p) = response.interact_pointer_pos() {
                 let (vd, nd) = back(p);
-                draft.surfaces[row].material = Some(Glass::from_abbe(&format!("{nd:.5}/{vd:.2}"), nd, vd));
-                changed = true;
+                let name = format!("{nd:.5}/{vd:.2}");
+                if draft.surfaces[row].material.as_ref().map(|g| g.name()) != Some(name.as_str()) {
+                    draft.surfaces[row].material = Some(Glass::from_abbe(&name, nd, vd));
+                    changed = true;
+                }
             }
         }
         if response.drag_stopped() {
