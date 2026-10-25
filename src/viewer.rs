@@ -20,6 +20,9 @@ use std::time::Instant;
 /// every 4th (with diffraction, each display costs an FFT convolution).
 const DISPLAY_EVERY_FRAME: u32 = 8;
 const MAX_FRAMES: u32 = 1024;
+/// A demo frame is captured once the image has this many passes, so that it
+/// looks finished rather than freshly restarted after a change.
+const DEMO_PASSES: u32 = 32;
 
 #[derive(Clone, PartialEq)]
 struct Controls {
@@ -220,7 +223,8 @@ fn lens_files(path: &Path) -> Vec<(PathBuf, String)> {
 impl Viewer {
     fn new(rs: egui_wgpu::RenderState, file: SceneFile, scene: Scene, lens_path: PathBuf, lens: Lens, fstop: f64, focus_mm: Option<f64>) -> Viewer {
         let mut renderer = GpuRenderer::new(GpuContext { device: rs.device.clone(), queue: rs.queue.clone() });
-        renderer.background_kernels = true;
+        // A demo waits for exact kernels; it is not interactive.
+        renderer.background_kernels = std::env::var_os("LENS_VIEWER_DEMO").is_none();
         renderer.set_scene(&scene);
         let c = &file.camera;
         let controls = Controls {
@@ -492,10 +496,7 @@ impl Viewer {
     /// time within each segment, and simulated drags in the lens panel.
     fn demo_actions(&mut self) {
         let Some((seg, t)) = self.demo.as_ref().and_then(|d| d.segment()).map(|(s, t)| (s.clone(), t)) else { return };
-        // Pointer moves are smooth; controls step every 4 video frames, so
-        // the image accumulates a few passes between changes.
-        let u_smooth = (t / seg.dur).clamp(0.0, 1.0);
-        let u = ((t * 7.5).floor() / 7.5 / seg.dur).clamp(0.0, 1.0);
+        let u = (t / seg.dur).clamp(0.0, 1.0);
         let ease = |x: f64| {
             let x = x.clamp(0.0, 1.0);
             x * x * (3.0 - 2.0 * x)
@@ -532,7 +533,6 @@ impl Viewer {
                 // Drag an element, bend the front surface by its rim, then move its glass.
                 let phases: [(u8, f64, f64, egui::Vec2); 3] = [(1, 0.05, 0.32, egui::vec2(45.0, 0.0)), (2, 0.38, 0.62, egui::vec2(-22.0, -14.0)), (3, 0.68, 0.92, egui::vec2(-90.0, 45.0))];
                 for (phase, a, b, delta) in phases {
-                    let u = u_smooth;
                     if u < a - 0.03 || u > b + 0.02 {
                         continue;
                     }
@@ -839,14 +839,17 @@ impl eframe::App for Viewer {
             return;
         }
         let frames = self.renderer.frames();
-        if frames < MAX_FRAMES {
-            // At most two frames in flight: keeps input latency low and the timing honest.
-            let _ = self.renderer.throttle(1);
-            self.renderer.render_frame();
+        // A demo renders several passes per update to reach DEMO_PASSES sooner.
+        for _ in 0..if self.demo.is_some() { 4 } else { 1 } {
+            if self.renderer.frames() < MAX_FRAMES {
+                // At most two frames in flight: keeps input latency low and the timing honest.
+                let _ = self.renderer.throttle(1);
+                self.renderer.render_frame();
+            }
         }
         self.renderer.set_display(2f64.powf(self.exposure_ev), if self.filmic { Tonemap::Filmic } else { Tonemap::Clip });
         let diffract = self.diffraction;
-        if !diffract || frames < DISPLAY_EVERY_FRAME || frames % 4 == 0 || frames >= MAX_FRAMES {
+        if !diffract || frames < DISPLAY_EVERY_FRAME || frames % 4 == 0 || frames >= MAX_FRAMES || self.demo.is_some() {
             if let Err(e) = self.renderer.resolve(diffract) {
                 self.status = format!("{e}");
             }
@@ -879,7 +882,7 @@ impl eframe::App for Viewer {
         }
         if let Some(d) = &self.demo {
             d.overlay(ui.ctx(), self.image_rect);
-            if d.capture(ui.ctx()) {
+            if d.capture(ui.ctx(), self.renderer.frames() >= DEMO_PASSES) {
                 eprintln!("demo frames written");
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }

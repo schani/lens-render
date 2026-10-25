@@ -84,12 +84,15 @@ impl Demo {
         self.segments.iter().find(|s| t >= s.start && t < s.start + s.dur).map(|s| (s, t - s.start))
     }
 
-    /// Screenshots the next frame unless one is still on its way (or too
-    /// many are still being written); returns true when the demo is over.
-    pub fn capture(&self, ctx: &egui::Context) -> bool {
+    /// Screenshots the next frame if `ready`, unless one is still on its way
+    /// (or too many are still being written); returns true when the demo is over.
+    pub fn capture(&self, ctx: &egui::Context, ready: bool) -> bool {
         let end = self.segments.last().map_or(0.0, |s| s.start + s.dur);
         if self.time() >= end {
             return self.writing.load(Ordering::Relaxed) == 0;
+        }
+        if !ready {
+            return false;
         }
         // A screenshot that never arrived is asked for again.
         let stale = self.requested.lock().unwrap().is_some_and(|t| t.elapsed().as_secs_f64() > 3.0);
