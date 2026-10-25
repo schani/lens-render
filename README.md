@@ -4,6 +4,10 @@ Physically based, spectral simulation of a photographic lens. Rays are traced
 through the real lens prescription, so the image shows the lens'
 imperfections because they emerge from the optics, not from post effects.
 
+[![Demo video: lens-render's viewer, 90 s, narrated](docs/demo.jpg)](docs/lens-render-demo.mp4)
+
+*Demo video (90 s, narrated): click the image.*
+
 Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
 
 - `cooke-triplet.lens`: 50 mm f/3.5 Cooke triplet.
