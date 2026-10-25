@@ -34,7 +34,7 @@ struct Controls {
     blades: u32,
     curvature: f64,
     rotation: f64,
-    coated: bool,
+    coating: Coating,
     ghosts: bool,
     wave: bool,
     /// Counts prescription edits.
@@ -44,7 +44,7 @@ struct Controls {
 impl Controls {
     /// The settings a PSF bank depends on (coating and ghosts do not matter).
     fn bank_key(&self) -> Controls {
-        Controls { coated: true, ghosts: true, wave: true, ..self.clone() }
+        Controls { coating: Coating::None, ghosts: true, wave: true, ..self.clone() }
     }
 }
 
@@ -354,7 +354,7 @@ impl Viewer {
             blades: c.iris_blades.unwrap_or(lens.blades),
             curvature: c.iris_curvature.unwrap_or(lens.blade_curvature),
             rotation: c.iris_rotation_deg,
-            coated: c.coating != "none",
+            coating: lens.coating,
             ghosts: c.ghosts,
             wave: c.wave_optics,
             revision: 0,
@@ -442,12 +442,12 @@ impl Viewer {
         if let Some(b) = &new_base {
             self.controls.fstop = self.controls.fstop.max(b.max_aperture());
             if from_file {
-                (self.controls.blades, self.controls.curvature) = (b.blades, b.blade_curvature);
+                (self.controls.blades, self.controls.curvature, self.controls.coating) = (b.blades, b.blade_curvature, b.coating);
             }
         }
         let k = self.controls.clone();
         let mut lens = new_base.clone().unwrap_or_else(|| self.base_lens.clone());
-        lens.coating = if k.coated { Coating::Single { n: 1.38, lambda0: 550.0 } } else { Coating::None };
+        lens.coating = k.coating;
         let focus = if k.focus_inf { None } else { Some(k.focus_m * 1000.0) };
         lens.prepare(k.fstop, k.blades, k.rotation, k.curvature, focus, self.file.camera.focus_offset_mm)?;
         let c = &self.file.camera;
@@ -576,7 +576,11 @@ impl Viewer {
         ui.add(egui::Slider::new(&mut k.blades, 0..=12).text("iris blades"));
         ui.add(egui::Slider::new(&mut k.curvature, 0.0..=1.0).text("blade curvature"));
         ui.add(egui::Slider::new(&mut k.rotation, 0.0..=60.0).text("iris rotation"));
-        ui.checkbox(&mut k.coated, "anti-reflection coating");
+        egui::ComboBox::from_label("anti-reflection coating").selected_text(k.coating.name()).show_ui(ui, |ui| {
+            for c in [Coating::None, Coating::SINGLE, Coating::MULTI] {
+                ui.selectable_value(&mut k.coating, c, c.name());
+            }
+        });
         ui.checkbox(&mut k.ghosts, "ghosts and veiling glare");
         ui.checkbox(&mut self.diffraction, "diffraction");
         ui.checkbox(&mut k.wave, "wave-optical PSFs");
@@ -638,12 +642,13 @@ impl Viewer {
                 k.blades = if u < 0.25 { 6 } else if u < 0.55 { 3 } else { 9 };
                 k.curvature = if u < 0.75 { 0.0 } else { ease((u - 0.75) / 0.2) };
             }
-            "coating" => (k.blades, k.curvature, k.coated) = (6, 0.0, false),
+            "coating" => (k.blades, k.curvature, k.coating) = (6, 0.0, Coating::None),
             "summilux" => {
                 if let Some((p, _)) = self.lens_files.iter().find(|(p, _)| p.to_string_lossy().contains("summilux")) {
                     k.lens = p.clone();
                 }
-                (k.coated, k.fstop) = (true, 1.4);
+                // Switching lenses restores the lens' own coating.
+                k.fstop = 1.4;
             }
             "wave" => k.wave = true,
             "editor" => {

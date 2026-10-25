@@ -158,29 +158,53 @@ fn iris_ratio(x: f32, y: f32) -> f32 {
     return r / (P.iris_apothem * iris_edge_unit(atan2(y, x)));
 }
 
-fn reflectance(n1: f32, n2: f32, cos1: f32, l: f32) -> f32 {
+// Unpolarised reflectance between air and glass `ng` through the coating's
+// thin films (see `film_stack` in lens.rs); `s` is the Snell invariant and
+// `ng0` the glass index at the design wavelength.
+fn film_stack(s: f32, ng: f32, ng0: f32, l: f32) -> f32 {
+    var idx = array<f32, 3>(P.coat_n, P.coat_h, clamp(P.coat_n * sqrt(ng0), 1.45, 2.0));
+    var waves = array<f32, 3>(0.25, 0.5, 0.25);
+    let count = select(1u, 3u, P.coating == 2u);
+    if (s >= 1.0) { return 1.0; }
+    let ca = sqrt(1.0 - s * s);
+    let cg = sqrt(1.0 - s * s / (ng * ng));
+    var r = 0.0;
+    for (var p = 0u; p < 2u; p++) {
+        var a = 1.0;
+        var b = 0.0;
+        var c = 0.0;
+        var d = 1.0;
+        for (var j = 0u; j < count; j++) {
+            let n = idx[j];
+            let cl = sqrt(1.0 - s * s / (n * n));
+            let e = select(n * cl, n / cl, p == 1u);
+            let delta = 2.0 * PI * waves[j] * P.coat_l0 * cl / l;
+            let cd = cos(delta);
+            let sd = sin(delta);
+            let a1 = a * cd - b * e * sd;
+            let b1 = a * sd / e + b * cd;
+            let c1 = c * cd + d * e * sd;
+            d = d * cd - c * sd / e;
+            a = a1;
+            b = b1;
+            c = c1;
+        }
+        let e0 = select(ca, 1.0 / ca, p == 1u);
+        let es = select(ng * cg, ng / cg, p == 1u);
+        let u = e0 * a - es * d;
+        let v = e0 * es * b - c;
+        let w = e0 * a + es * d;
+        let x = e0 * es * b + c;
+        r += (u * u + v * v) / (w * w + x * x);
+    }
+    return 0.5 * r;
+}
+
+fn reflectance(n1: f32, n2: f32, cos1: f32, l: f32, ng0: f32) -> f32 {
     let s = n1 * sqrt(max(1.0 - cos1 * cos1, 0.0));
     let air = (n1 == 1.0) != (n2 == 1.0);
-    if (P.coating == 1u && air) {
-        let na = select(n2, n1, n1 == 1.0);
-        let ng = select(n1, n2, n1 == 1.0);
-        let nc = P.coat_n;
-        let sa = s / na;
-        let sc = s / nc;
-        let sg = s / ng;
-        if (sa >= 1.0 || sc >= 1.0 || sg >= 1.0) { return 1.0; }
-        let ca = sqrt(1.0 - sa * sa);
-        let cc = sqrt(1.0 - sc * sc);
-        let cg = sqrt(1.0 - sg * sg);
-        let d = P.coat_l0 / (4.0 * nc);
-        let cphi = cos(4.0 * PI * nc * d * cc / l);
-        var r01 = (na * ca - nc * cc) / (na * ca + nc * cc);
-        var r12 = (nc * cc - ng * cg) / (nc * cc + ng * cg);
-        let rs = (r01 * r01 + r12 * r12 + 2.0 * r01 * r12 * cphi) / (1.0 + r01 * r01 * r12 * r12 + 2.0 * r01 * r12 * cphi);
-        r01 = (nc * ca - na * cc) / (nc * ca + na * cc);
-        r12 = (ng * cc - nc * cg) / (ng * cc + nc * cg);
-        let rp = (r01 * r01 + r12 * r12 + 2.0 * r01 * r12 * cphi) / (1.0 + r01 * r01 * r12 * r12 + 2.0 * r01 * r12 * cphi);
-        return 0.5 * (rs + rp);
+    if (P.coating != 0u && air) {
+        return film_stack(s, max(n1, n2), ng0, l);
     }
     let s2 = s / n2;
     if (s2 >= 1.0) { return 1.0; }
@@ -270,7 +294,11 @@ fn trace_clip(ray: ptr<function, Ray>, l: f32, path: u32, track: bool, soft: boo
             nrm = -nrm;
             cosi = -cosi;
         }
-        let r = reflectance(n1, n2, cosi, l);
+        var ng0 = 1.0;
+        if (P.coating == 2u) {
+            ng0 = max(medium_n(i, P.coat_l0), medium_n(i + 1u, P.coat_l0));
+        }
+        let r = reflectance(n1, n2, cosi, l, ng0);
         if (refl) {
             t *= r;
             (*ray).d = d + nrm * (2.0 * cosi);

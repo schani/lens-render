@@ -44,7 +44,8 @@ pub struct CameraCfg {
     pub focus_distance: f64,
     #[serde(default)]
     pub focus_offset_mm: f64,
-    /// "none" (uncoated) or "single" (MgF2 quarter wave).
+    /// "lens" (the lens file's coating), "none", "single" (MgF2 quarter wave)
+    /// or "multi" (broadband multi-layer).
     #[serde(default = "d_coating")]
     pub coating: String,
     /// Overrides the lens' iris.
@@ -99,7 +100,7 @@ fn d_inf() -> f64 {
     f64::INFINITY
 }
 fn d_coating() -> String {
-    "single".into()
+    "lens".into()
 }
 fn d_spp() -> u32 {
     64

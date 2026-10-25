@@ -95,6 +95,66 @@ pub enum Coating {
     None,
     /// Single quarter-wave layer (MgF₂-like) of index `n` tuned to `lambda0` nm.
     Single { n: f64, lambda0: f64 },
+    /// Broadband quarter–half–quarter stack tuned to `lambda0` nm, from the air
+    /// side: λ/4 of `n_low`, λ/2 of `n_high`, λ/4 of n_low·√n_glass(λ0), the
+    /// glass-specific index that cancels the reflection at λ0.
+    Multi { n_low: f64, n_high: f64, lambda0: f64 },
+}
+
+impl Coating {
+    pub const SINGLE: Coating = Coating::Single { n: 1.38, lambda0: 550.0 };
+    /// MgF₂ over ZrO₂-like high index.
+    pub const MULTI: Coating = Coating::Multi { n_low: 1.38, n_high: 2.1, lambda0: 550.0 };
+
+    pub fn parse(name: &str) -> Result<Coating> {
+        Ok(match name {
+            "none" => Coating::None,
+            "single" => Coating::SINGLE,
+            "multi" => Coating::MULTI,
+            _ => bail!("unknown coating {name} (none, single or multi)"),
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Coating::None => "none",
+            Coating::Single { .. } => "single",
+            Coating::Multi { .. } => "multi",
+        }
+    }
+
+    /// Index of the multi-layer's inner layer on glass of index `ng0` at λ0.
+    fn tailored_index(n_low: f64, ng0: f64) -> f64 {
+        (n_low * ng0.sqrt()).clamp(1.45, 2.0)
+    }
+}
+
+/// Unpolarised reflectance between air and glass of index `ng` through thin
+/// `layers` (index, optical thickness in waves at `lambda0`) listed from the
+/// air side; `s` is the Snell invariant n·sin θ. Characteristic-matrix method:
+/// for lossless layers each matrix is [[a, ib], [ic, d]] with a, b, c, d real.
+fn film_stack(layers: &[(f64, f64)], ng: f64, s: f64, lambda0: f64, l: f64) -> f64 {
+    let cosm = |n: f64| -> Option<f64> {
+        let x = s / n;
+        if x >= 1.0 { None } else { Some((1.0 - x * x).sqrt()) }
+    };
+    let Some(cg) = cosm(ng) else { return 1.0 };
+    let Some(ca) = cosm(1.0) else { return 1.0 };
+    let mut r = 0.0;
+    for p in [false, true] {
+        // Tilted admittances: n cos θ (s) and n / cos θ (p).
+        let eta = |n: f64, c: f64| if p { n / c } else { n * c };
+        let (mut a, mut b, mut c, mut d) = (1.0, 0.0, 0.0, 1.0);
+        for &(n, waves) in layers {
+            let Some(cl) = cosm(n) else { return 1.0 };
+            let (e, delta) = (eta(n, cl), 2.0 * PI * waves * lambda0 * cl / l);
+            let (cd, sd) = (delta.cos(), delta.sin());
+            (a, b, c, d) = (a * cd - b * e * sd, a * sd / e + b * cd, c * cd + d * e * sd, d * cd - c * sd / e);
+        }
+        let (e0, es) = (eta(1.0, ca), eta(ng, cg));
+        r += ((e0 * a - es * d).powi(2) + (e0 * es * b - c).powi(2)) / ((e0 * a + es * d).powi(2) + (e0 * es * b + c).powi(2));
+    }
+    0.5 * r
 }
 
 /// Aperture iris made of straight or curved blades.
@@ -219,6 +279,7 @@ impl Lens {
         let mut surfaces = Vec::new();
         let mut floating = Vec::new();
         let (mut blades, mut blade_curvature) = (6, 0.0);
+        let mut coating = Coating::SINGLE;
         for (lineno, line) in text.lines().enumerate() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("@name") {
@@ -233,6 +294,10 @@ impl Lens {
                 }
                 blades = v[0] as u32;
                 blade_curvature = v.get(1).copied().unwrap_or(0.0);
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@coating") {
+                coating = Coating::parse(rest.trim()).with_context(|| format!("line {}", lineno + 1))?;
                 continue;
             }
             if let Some(rest) = line.strip_prefix("@float") {
@@ -306,7 +371,7 @@ impl Lens {
         Ok(Lens {
             name,
             surfaces,
-            coating: Coating::Single { n: 1.38, lambda0: 550.0 },
+            coating,
             iris: Iris::new(0, 0.0, 0.0, stop_r, true),
             blades,
             blade_curvature,
@@ -373,7 +438,7 @@ impl Lens {
 
     /// The prescription as `.lens` text (decentering is not part of it).
     pub fn to_text(&self) -> String {
-        let mut t = format!("@name {}\n@iris {} {}\n", self.name, self.blades, self.blade_curvature);
+        let mut t = format!("@name {}\n@iris {} {}\n@coating {}\n", self.name, self.blades, self.blade_curvature, self.coating.name());
         for f in &self.floating {
             t += &format!("@float {} {} {} {}\n", f.surface + 1, f.at_infinity, f.at_close, f.close_distance / 1000.0);
         }
@@ -655,31 +720,21 @@ impl Lens {
     }
 
     /// Fresnel reflectance (unpolarised) at an interface from index `n1` to `n2`.
+    /// Air–glass interfaces are coated; `ng0` is the glass index at the
+    /// coating's design wavelength.
     #[inline]
-    pub fn reflectance(&self, n1: f64, n2: f64, cos1: f64, l: f64) -> f64 {
+    pub fn reflectance(&self, n1: f64, n2: f64, cos1: f64, l: f64, ng0: f64) -> f64 {
         let sin1_n = n1 * (1.0 - cos1 * cos1).max(0.0).sqrt(); // Snell invariant
         let cosm = |n: f64| -> Option<f64> {
             let s = sin1_n / n;
             if s >= 1.0 { None } else { Some((1.0 - s * s).sqrt()) }
         };
         let air_interface = (n1 == 1.0) != (n2 == 1.0);
+        let ng = n1.max(n2);
         match self.coating {
-            Coating::Single { n: nc, lambda0 } if air_interface => {
-                let (na, ng) = if n1 == 1.0 { (n1, n2) } else { (n2, n1) };
-                let (Some(ca), Some(cc), Some(cg)) = (cosm(na), cosm(nc), cosm(ng)) else {
-                    return 1.0;
-                };
-                let d = lambda0 / (4.0 * nc);
-                let phi = 4.0 * PI * nc * d * cc / l;
-                let cphi = phi.cos();
-                let film = |r01: f64, r12: f64| {
-                    let num = r01 * r01 + r12 * r12 + 2.0 * r01 * r12 * cphi;
-                    let den = 1.0 + r01 * r01 * r12 * r12 + 2.0 * r01 * r12 * cphi;
-                    num / den
-                };
-                let rs = film((na * ca - nc * cc) / (na * ca + nc * cc), (nc * cc - ng * cg) / (nc * cc + ng * cg));
-                let rp = film((nc * ca - na * cc) / (nc * ca + na * cc), (ng * cc - nc * cg) / (ng * cc + nc * cg));
-                0.5 * (rs + rp)
+            Coating::Single { n, lambda0 } if air_interface => film_stack(&[(n, 0.25)], ng, sin1_n, lambda0, l),
+            Coating::Multi { n_low, n_high, lambda0 } if air_interface => {
+                film_stack(&[(n_low, 0.25), (n_high, 0.5), (Coating::tailored_index(n_low, ng0), 0.25)], ng, sin1_n, lambda0, l)
             }
             _ => {
                 let Some(cos2) = cosm(n2) else { return 1.0 };
@@ -727,7 +782,11 @@ impl Lens {
                 nrm = -nrm;
                 cosi = -cosi;
             }
-            let refl = self.reflectance(n1, n2, cosi, l);
+            let ng0 = match self.coating {
+                Coating::Multi { lambda0, .. } => self.surfaces[i].material.as_ref().or(i.checked_sub(1).and_then(|j| self.surfaces[j].material.as_ref())).map_or(1.0, |g| g.index(lambda0)),
+                _ => 1.0,
+            };
+            let refl = self.reflectance(n1, n2, cosi, l, ng0);
             if ev.reflect {
                 throughput *= refl;
                 ray = Ray { o: p, d: ray.d + nrm * (2.0 * cosi) };
@@ -904,12 +963,33 @@ mod tests {
     fn uncoated_reflectance() {
         let mut lens = Lens::parse(TRIPLET).unwrap();
         lens.coating = Coating::None;
-        let r = lens.reflectance(1.0, 1.5, 1.0, 550.0);
+        let r = lens.reflectance(1.0, 1.5, 1.0, 550.0, 1.5);
         assert!((r - 0.04).abs() < 1e-9);
         let mut coated = lens.clone();
         coated.coating = Coating::Single { n: 1.38, lambda0: 550.0 };
-        assert!(coated.reflectance(1.0, 1.5, 1.0, 550.0) < 0.015);
-        assert!(coated.reflectance(1.5, 1.0, 1.0, 550.0) < 0.015);
+        assert!(coated.reflectance(1.0, 1.5, 1.0, 550.0, 1.5) < 0.015);
+        assert!(coated.reflectance(1.5, 1.0, 1.0, 550.0, 1.5) < 0.015);
+    }
+
+    /// Band-averaged (420–680 nm) reflectance of the multi-layer vs the single
+    /// layer on glass of index 1.47–1.92, at 0° and 30°.
+    #[test]
+    fn multi_coating() {
+        let lens = |coating| Lens { coating, ..Lens::parse(TRIPLET).unwrap() };
+        let (single, multi) = (lens(Coating::SINGLE), lens(Coating::MULTI));
+        let band = |l: &Lens, ng: f64, deg: f64| (420..=680).step_by(5).map(|w| l.reflectance(1.0, ng, deg.to_radians().cos(), w as f64, ng)).sum::<f64>() / 53.0;
+        let (mut sum_s, mut sum_m) = (0.0, 0.0);
+        for ng in [1.47, 1.52, 1.6, 1.7, 1.8, 1.92] {
+            let (s0, m0, s30, m30) = (band(&single, ng, 0.0), band(&multi, ng, 0.0), band(&single, ng, 30.0), band(&multi, ng, 30.0));
+            println!("n {ng}: 0° single {:.3} % multi {:.3} %, 30° single {:.3} % multi {:.3} %", s0 * 100.0, m0 * 100.0, s30 * 100.0, m30 * 100.0);
+            assert!(m0 < 0.005 && m30 < 0.02);
+            (sum_s, sum_m) = (sum_s + s0, sum_m + m0);
+        }
+        assert!(sum_m < sum_s / 3.0);
+        // Zero at λ0; the single layer through the stack is the quarter-wave formula.
+        assert!(multi.reflectance(1.0, 1.6, 1.0, 550.0, 1.6) < 1e-12);
+        assert!((single.reflectance(1.6, 1.0, 1.0, 550.0, 1.6) - ((1.6 - 1.38f64.powi(2)) / (1.6 + 1.38f64.powi(2))).powi(2)).abs() < 1e-12);
+        assert_eq!(Lens::parse(include_str!("../lenses/summilux-50-asph.lens")).unwrap().coating, Coating::MULTI);
     }
 
     /// The Newton asphere intersection reproduces the exact sphere solution.
@@ -959,7 +1039,7 @@ mod tests {
             let a = Lens::parse(text).unwrap();
             let b = Lens::parse(&a.to_text()).unwrap();
             assert_eq!(a.to_text(), b.to_text());
-            assert_eq!((a.name.as_str(), a.blades, a.surfaces.len(), a.floating.len()), (b.name.as_str(), b.blades, b.surfaces.len(), b.floating.len()));
+            assert_eq!((a.name.as_str(), a.blades, a.surfaces.len(), a.floating.len(), a.coating), (b.name.as_str(), b.blades, b.surfaces.len(), b.floating.len(), b.coating));
             assert!((a.focal_length() - b.focal_length()).abs() < 1e-12);
             for (s, t) in a.surfaces.iter().zip(&b.surfaces) {
                 assert_eq!((s.radius, s.thickness, s.semi_diameter, s.conic, &s.aspheric), (t.radius, t.thickness, t.semi_diameter, t.conic, &t.aspheric));

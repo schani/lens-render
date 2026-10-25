@@ -155,11 +155,9 @@ fn setup(scene_path: &str, overrides: &[String]) -> Result<Setup> {
 
     let lens_path = base.join(&c.lens);
     let mut lens = lens::Lens::load(lens_path.to_str().unwrap())?;
-    lens.coating = match c.coating.as_str() {
-        "none" => lens::Coating::None,
-        "single" => lens::Coating::Single { n: 1.38, lambda0: 550.0 },
-        other => bail!("unknown coating {other}"),
-    };
+    if c.coating != "lens" {
+        lens.coating = lens::Coating::parse(&c.coating)?;
+    }
     for d in &c.decenter {
         lens.decenter_element(d[0] as usize, d[1], d[2])?;
     }

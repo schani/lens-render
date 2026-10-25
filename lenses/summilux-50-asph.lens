@@ -1,5 +1,7 @@
 @name Leica Summilux-M 50mm f/1.4 ASPH - reconstruction
 @iris 11
+# Leica multicoats its lenses.
+@coating multi
 # RECONSTRUCTION, not manufacturer data (Leica publishes no prescription; the patent has no table).
 # Geometry: circle/asphere fits to the vector lens cut in Leica's Feb-2023 data sheet, scaled to
 # EFL 51.6 mm (0.281465 mm per PDF pt). nd/vd are fitted, not known (see NOTES.md). Asphere refit

@@ -6,8 +6,8 @@
 //! and a pixel wing like `psfbank` does on the CPU.
 
 use super::diffraction::FftParams;
-use super::{GpuContext, Params, encode_path, front_z, media_table, shader_source, storage_entry, surface_words, wgpu};
-use crate::lens::{Coating, Lens};
+use super::{GpuContext, Params, coating_params, encode_path, front_z, media_table, shader_source, storage_entry, surface_words, wgpu};
+use crate::lens::Lens;
 use crate::psf::{Source, WavefrontPlan};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -157,17 +157,13 @@ impl WaveGpu {
         let path = encode_path(&lens.forward_path);
         blob.extend(&path);
         let iris = &lens.iris;
+        let (coating, coat_n, coat_h, coat_l0) = coating_params(lens.coating);
         let params = Params {
             n_surf: lens.surfaces.len() as u32,
-            coating: matches!(lens.coating, Coating::Single { .. }) as u32,
-            coat_n: match lens.coating {
-                Coating::Single { n, .. } => n as f32,
-                Coating::None => 1.0,
-            },
-            coat_l0: match lens.coating {
-                Coating::Single { lambda0, .. } => lambda0 as f32,
-                Coating::None => 550.0,
-            },
+            coating,
+            coat_n,
+            coat_h,
+            coat_l0,
             iris_blades: iris.blades,
             iris_circular: iris.circular as u32,
             iris_rotation: iris.rotation as f32,

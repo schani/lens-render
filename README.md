@@ -23,7 +23,7 @@ Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
 | Spherical aberration, coma, astigmatism, field curvature, distortion | Exact ray tracing through spherical surfaces (Snell's law) |
 | Longitudinal and lateral chromatic aberration | Spectral rendering, 380–780 nm; Sellmeier dispersion of the Schott glasses |
 | Natural vignetting (cos⁴) and mechanical vignetting (cat's-eye bokeh) | Sampling through the real exit pupil; clipping at element clear apertures |
-| Transmission losses, coating tint | Fresnel equations; uncoated or single-layer MgF₂ quarter-wave coating (thin-film interference) |
+| Transmission losses, coating tint | Fresnel equations; uncoated, single-layer MgF₂ quarter-wave, or broadband quarter–half–quarter multi-layer coating (thin-film interference) |
 | Ghosts (lens flare) | All two-reflection paths, traced from each light as a ray grid and rasterised (noise-free, with caustics) |
 | Veiling glare | The same ghost paths sampled from the sensor for bright scene surfaces |
 | Diffraction, star bursts | Default: Fraunhofer PSF of the iris shape per wavelength, convolved with the image. With `wave_optics`: wave-optical PSFs (below) |
@@ -189,7 +189,7 @@ sensor_height_mm = 24
 fstop = 5.6                         # omit for wide open
 focus_distance = 2.0                # metres, or inf
 focus_offset_mm = 0.0               # manual focus shift of the sensor
-coating = "single"                  # or "none"
+coating = "lens"                    # the lens' @coating, or none, single, multi
 iris_blades = 6                     # overrides the lens' @iris
 iris_rotation_deg = 0
 iris_curvature = 0.0                # 0 straight blades, 1 circular
@@ -249,7 +249,8 @@ Radius `inf` is flat; `stop` marks the iris. Aspheric surfaces take extra
 z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + Σ a₂ᵢ r²ⁱ. Floating elements:
 `@float <row> <gap at infinity> <gap at close focus> <close distance in m>`
 makes the thickness of that row vary linearly in object vergence.
-`@iris <blades> [curvature]` describes the iris (default 6 straight blades). Materials are `air`, a
+`@iris <blades> [curvature]` describes the iris (default 6 straight blades), `@coating none|single|multi`
+the anti-reflection coating (default single). Materials are `air`, a
 catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,
 FUSED-SILICA) or `nd/vd`, e.g. `1.62041/60.32`. The last thickness is the
 nominal distance to the image plane; focusing moves the sensor.

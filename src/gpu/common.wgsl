@@ -20,6 +20,7 @@ struct Params {
     bank_on: u32, bank_nt: u32, bank_nv: u32, bank_na: u32,
     bank_half: u32, bank_refs_off: u32, bank_cdf_off: u32, psf_margin: u32,
     bank_tan_max: f32, bank_v0: f32, bank_dv: f32, bank_period: f32,
+    coat_h: f32, _p0: u32, _p1: u32, _p2: u32,
 }
 
 const LAMBDA_MIN: f32 = 380.0;

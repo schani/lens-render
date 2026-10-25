@@ -92,6 +92,8 @@ struct Params {
     bank_v0: f32,
     bank_dv: f32,
     bank_period: f32,
+    coat_h: f32,
+    _pad: [u32; 3],
 }
 
 /// Device and queue, either our own (headless) or borrowed from the viewer.
@@ -335,6 +337,15 @@ fn media_table(lens: &Lens) -> Vec<f32> {
         }
     }
     t
+}
+
+/// Coating mode (0 none, 1 single, 2 multi), low and high layer index, design wavelength.
+fn coating_params(c: Coating) -> (u32, f32, f32, f32) {
+    match c {
+        Coating::None => (0, 1.0, 1.0, 550.0),
+        Coating::Single { n, lambda0 } => (1, n as f32, 1.0, lambda0 as f32),
+        Coating::Multi { n_low, n_high, lambda0 } => (2, n_low as f32, n_high as f32, lambda0 as f32),
+    }
 }
 
 /// Encodes an event list for the lens blob.
@@ -733,6 +744,7 @@ impl GpuRenderer {
         let centered = lens.is_centered();
         let (nx, ny) = (25u32, 17u32);
         self.n_ghosts = ghosts.len();
+        let (coating, coat_n, coat_h, coat_l0) = coating_params(lens.coating);
         self.params = Params {
             w: s.w as u32,
             h: s.h as u32,
@@ -749,7 +761,7 @@ impl GpuRenderer {
             bounds_g: BOUNDS_G,
             n_ghosts: ghosts.len() as u32,
             veil: (s.ghosts && !ghosts.is_empty()) as u32,
-            coating: matches!(lens.coating, Coating::Single { .. }) as u32,
+            coating,
             iris_blades: iris.blades,
             iris_circular: iris.circular as u32,
             light_grid: s.light_grid,
@@ -766,14 +778,8 @@ impl GpuRenderer {
             iris_curvature: iris.curvature as f32,
             iris_apothem: iris.apothem() as f32,
             iris_max_radius: iris.max_radius as f32,
-            coat_n: match lens.coating {
-                Coating::Single { n, .. } => n as f32,
-                Coating::None => 1.0,
-            },
-            coat_l0: match lens.coating {
-                Coating::Single { lambda0, .. } => lambda0 as f32,
-                Coating::None => 550.0,
-            },
+            coat_n,
+            coat_l0,
             front_z: front_z as f32,
             ep_z: par.entrance_pupil_z as f32,
             front_half: (1.5 * lens.surfaces[0].semi_diameter) as f32,
@@ -807,6 +813,8 @@ impl GpuRenderer {
             bank_v0: bank.map_or(0.0, |b| b.verg0 as f32),
             bank_dv: bank.map_or(1.0, |b| b.dverg.max(1e-12) as f32),
             bank_period: bank.map_or(1.0, |b| b.period as f32),
+            coat_h,
+            _pad: [0; 3],
         };
 
         self.static_bufs = Some(bufs);
@@ -1264,30 +1272,32 @@ mod tests {
 
     #[test]
     fn ghosts_match_cpu() {
-        let mut lens = lens(4.0, Some(3000.0));
-        lens.coating = Coating::None;
         let light = |c: Vec3| Light { center: c, radius: 30.0, spectrum: LightSpectrum::Blackbody { t: 4000.0, scale: 1e-6 } };
         let cs = ColorSystem::new();
-        for c in [Vec3::new(400.0, 250.0, -5000.0), Vec3::new(-1500.0, 900.0, -6000.0)] {
+        for (coating, c) in [(Coating::None, Vec3::new(400.0, 250.0, -5000.0)), (Coating::None, Vec3::new(-1500.0, 900.0, -6000.0)), (Coating::MULTI, Vec3::new(400.0, 250.0, -5000.0))] {
+            let lens = Lens { coating, ..lens(4.0, Some(3000.0)) };
+            // The multi-layer's reflectance rises steeply at the band edges: the
+            // CPU's fixed wavelengths per bin need finer bins.
+            let bins = if coating == Coating::MULTI { 32 } else { 8 };
             let scene = Scene { rects: vec![], lights: vec![light(c)], background: [0.0; 3] };
             if GpuContext::headless().is_err() {
                 return;
             }
-            let mut ghost = |grid: u32, frames: u32| {
-                let mut s = settings(120, 80, 8, true);
+            let ghost = |grid: u32, frames: u32| {
+                let mut s = settings(120, 80, bins, true);
                 s.light_grid = grid;
                 let with = total(&gpu_film(&lens, &scene, &s, frames).unwrap());
                 s.ghosts = false;
                 with - total(&gpu_film(&lens, &scene, &s, frames).unwrap())
             };
             let g128 = ghost(128, 64);
-            let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, 8, 1.0);
-            let mut a = Film::new(120, 80, 8);
+            let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, bins, 1.0);
+            let mut a = Film::new(120, 80, bins);
             r.render_lights(&mut a, 4_000_000, 256, 0.0, false);
-            let mut b = Film::new(120, 80, 8);
+            let mut b = Film::new(120, 80, bins);
             r.render_lights(&mut b, 4_000_000, 256, f64::INFINITY, false);
             let cpu = total(&a) - total(&b);
-            println!("ghost energy: gpu {g128} cpu {cpu}");
+            println!("ghost energy ({}): gpu {g128} cpu {cpu}", coating.name());
             assert!((g128 - cpu).abs() / cpu < 0.01);
         }
     }
