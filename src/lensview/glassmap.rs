@@ -79,7 +79,8 @@ impl GlassMap {
         painter.text(at(32.0, ND.1), egui::Align2::CENTER_TOP, "flints", font.clone(), Color32::GRAY);
         painter.text(plot.center_bottom() + egui::vec2(0.0, 12.0), egui::Align2::CENTER_TOP, "Abbe number V_d (less dispersion to the left)", font.clone(), Color32::DARK_GRAY);
 
-        let catalogue: Vec<(String, Pos2)> = Glass::catalog().filter_map(|n| Glass::parse(n).ok()).map(|g| (g.name().to_string(), at(g.abbe(), g.nd()))).collect();
+        let inside = |g: &Glass| (VD.1..=VD.0).contains(&g.abbe()) && (ND.0..=ND.1).contains(&g.nd());
+        let catalogue: Vec<(String, Pos2)> = Glass::catalog().filter_map(|n| Glass::parse(n).ok()).filter(inside).map(|g| (g.name().to_string(), at(g.abbe(), g.nd()))).collect();
         for (name, p) in &catalogue {
             painter.circle_filled(*p, 3.5, Color32::from_gray(120));
             painter.text(*p + egui::vec2(5.0, -2.0), egui::Align2::LEFT_BOTTOM, name, font.clone(), Color32::from_gray(110));
