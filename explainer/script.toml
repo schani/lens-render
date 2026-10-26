@@ -973,3 +973,6 @@ at = "@Summilux-0.3"
 dur = 0
 lens = "summilux"
 fstop = 1.4
+# Its 52 mm puts the corner stars at the frame edge; show the corner light.
+corner = [0.085, 0.92]
+corner_label = "corner light"
