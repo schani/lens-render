@@ -27,8 +27,9 @@ const GLASS: Color32 = Color32::from_rgba_premultiplied(60, 95, 140, 110);
 const GLASS_EDGE: Color32 = Color32::from_rgb(150, 190, 240);
 const FIELD_COLORS: [Color32; 3] = [Color32::from_rgb(255, 209, 102), Color32::from_rgb(255, 138, 101), Color32::from_rgb(77, 208, 225)];
 const RGB: [Color32; 3] = [Color32::from_rgb(90, 140, 255), Color32::from_rgb(90, 215, 120), Color32::from_rgb(255, 90, 90)];
-const T_COLOR: Color32 = Color32::from_rgb(255, 138, 101);
-const S_COLOR: Color32 = Color32::from_rgb(77, 208, 225);
+// Image surfaces, distinct from the ray fans' colours.
+const T_COLOR: Color32 = Color32::from_rgb(255, 99, 176);
+const S_COLOR: Color32 = Color32::from_rgb(150, 220, 90);
 const P_COLOR: Color32 = Color32::from_rgb(190, 170, 255);
 /// Scoreboard thresholds (µm): green up to the first, amber up to the second;
 /// distortion (%) has its own.
@@ -601,7 +602,8 @@ impl Explainer {
         let clip = p.with_clip_rect(plot.expand(2.0));
         clip.extend(Shape::dashed_line(&[pos2(plot.center().x, plot.top()), pos2(plot.center().x, plot.bottom())], Stroke::new(2.0, Color32::WHITE), 6.0, 4.0));
         p.line_segment([plot.left_bottom(), plot.right_bottom()], Stroke::new(1.0, EDGE));
-        for (i, (color, label)) in [(T_COLOR, "T"), (S_COLOR, "S"), (P_COLOR, "Petzval")].into_iter().enumerate() {
+        let mut labels = Vec::new();
+        for (i, (color, label)) in [(T_COLOR, "T"), (S_COLOR, "S"), (P_COLOR, "Petzval (theory)")].into_iter().enumerate() {
             let pts: Vec<Pos2> = o.curves.iter().map(|c| at(c[i + 1], c[0])).collect();
             if i == 2 {
                 clip.extend(Shape::dashed_line(&pts, Stroke::new(2.0, color), 5.0, 4.0));
@@ -609,9 +611,17 @@ impl Explainer {
                 clip.add(Shape::line(pts.clone(), Stroke::new(2.5, color)));
             }
             if let Some(end) = pts.last() {
-                let pos = pos2(end.x.clamp(plot.left() + 10.0, plot.right() - 10.0), end.y - 2.0);
-                p.text(pos, Align2::CENTER_BOTTOM, label, medium(13.0), color);
+                let g = p.layout_no_wrap(label.into(), medium(13.0), color);
+                labels.push((end.x.clamp(plot.left() + 10.0, plot.right() - 10.0), end.y - 2.0, g));
             }
+        }
+        // Labels at the curves' corner ends, pushed apart where they would overlap.
+        labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut right_edge = f32::NEG_INFINITY;
+        for (x, y, g) in labels {
+            let left = (x - g.size().x / 2.0).max(right_edge + 6.0);
+            right_edge = left + g.size().x;
+            p.galley(pos2(left, y - g.size().y), g, TEXT);
         }
         p.text(plot.left_bottom() + vec2(-6.0, 0.0), Align2::RIGHT_BOTTOM, "center", regular(12.0), DIM);
         p.text(plot.left_top() + vec2(-6.0, 0.0), Align2::RIGHT_TOP, "corner", regular(12.0), DIM);
@@ -907,11 +917,21 @@ fn draw_lens(p: &Painter, v: &DiagramView, o: &Optics, s: &State, now: f64, r: R
             }
         }
     }
-    // The sharp image surface at true scale (medial between T and S).
+    // The image surfaces at true scale, as in the plot, and where each
+    // drawn off-axis fan comes to focus (on the T surface).
     let fc = s.flag("field_curves").alpha(now, FADE);
     if fc > 0.0 && o.curves.len() > 1 {
-        let pts: Vec<Pos2> = o.curves.iter().rev().map(|c| v.at(lens.sensor_z + 0.5 * (c[1] + c[2]), -c[0])).chain(o.curves.iter().skip(1).map(|c| v.at(lens.sensor_z + 0.5 * (c[1] + c[2]), c[0]))).collect();
-        p.add(Shape::line(pts, Stroke::new(2.5, T_COLOR.gamma_multiply(fc))));
+        for (k, color) in [(2, S_COLOR), (1, T_COLOR)] {
+            let at = |c: &[f64; 6], sign: f64| v.at(lens.sensor_z + c[k], sign * c[k + 3]);
+            let pts: Vec<Pos2> = o.curves.iter().rev().map(|c| at(c, -1.0)).chain(o.curves.iter().skip(1).map(|c| at(c, 1.0))).collect();
+            p.add(Shape::line(pts, Stroke::new(2.0, color.gamma_multiply(fc))));
+        }
+        for (f, rays) in o.fans.iter().filter(|(f, _)| *f > 0.0 && s.fields.iter().any(|x| (x - f).abs() < 1e-6)) {
+            let _ = f;
+            if let Some((z, y)) = optics::fan_focus(rays) {
+                p.circle(v.at(z, y), 4.5, T_COLOR.gamma_multiply(fc), Stroke::new(1.5, BG.gamma_multiply(fc)));
+            }
+        }
     }
     let hd = lens.sensor_half.0.hypot(lens.sensor_half.1);
     p.line_segment([v.at(lens.sensor_z, -hd), v.at(lens.sensor_z, hd)], Stroke::new(4.0, TEXT));

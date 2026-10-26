@@ -70,45 +70,7 @@ triplet_f2 = { file = "lenses/explainer/08-triplet-f2.lens", label = "Triplet re
 clark = { file = "lenses/explainer/09-clark.lens", label = "Clark (1888)" }
 planar = { file = "lenses/explainer/10-planar.lens", label = "Planar (Rudolph, 1896)" }
 dgauss = { file = "lenses/explainer/11b-double-gauss.lens", label = "Double Gauss" }
-summilux = { file = "lenses/summilux-50-asph.lens", label = "Leica Summilux 50 f/1.4 ASPH (reconstruction)" }
-
-# The recap: each design with the idea it added.
-[[recap]]
-lens = "best"
-label = "best-form singlet"
-tool = "bend the glass"
-[[recap]]
-lens = "achromat"
-label = "achromat"
-tool = "two glasses"
-[[recap]]
-lens = "landscape"
-label = "landscape lens"
-tool = "move the stop"
-[[recap]]
-lens = "rr"
-label = "Rapid Rectilinear"
-tool = "symmetry"
-[[recap]]
-lens = "triplet"
-label = "Cooke triplet"
-tool = "negative lens inside"
-[[recap]]
-lens = "triplet_f2"
-label = "triplet at f/2"
-tool = "out of freedom"
-[[recap]]
-lens = "clark"
-label = "Clark"
-tool = "curl around the stop"
-[[recap]]
-lens = "planar"
-label = "Planar"
-tool = "buried cemented surface"
-[[recap]]
-lens = "dgauss"
-label = "double Gauss"
-tool = "break the symmetry"
+summilux = { file = "lenses/summilux-50-asph.lens", label = "Leica Summilux-M 50 f/1.4 ASPH (reconstruction)" }
 
 # ---------------------------------------------------------------- 0 Hook
 [[chapter]]
@@ -559,8 +521,8 @@ at = "@bowl"
 until = "end"
 on = "diagram"
 shape = "arrow"
-pos = [-22.0, 21.0]
-to = [-4.8, 14.0]
+pos = [-30.0, 4.0]
+to = [-12.3, 15.8]
 text = "sharpest image"
 
 # ---------------------------------------------------------------- 8 Move the stop
@@ -998,61 +960,16 @@ shape = "box"
 pos = [0.625, 0.5]
 r = [0.12, 0.42]
 
-# ---------------------------------------------------------------- 17 Recap
-[[chapter]]
-id = "recap"
-title = "From one lens to six"
-number = 17
-narration = """From one lens to six. For the center: bend the glass, and combine two glasses.
-For the corners: move the stop, use symmetry, and flatten the field with a negative lens.
-For speed: curl the surfaces around the stop, bury the color correction, and tune each half.
-Each step solved one problem, and revealed the next."""
-tail = 1.4
-
-[[chapter.key]]
-at = 0.3
-recap = true
-
-[[chapter.key]]
-at = "end-0.5"
-recap = false
-
-# ---------------------------------------------------------------- 18 Outro
+# ---------------------------------------------------------------- 17 Outro
 [[chapter]]
 id = "outro"
-title = ""
+title = "Leica Summilux-M 50 f/1.4 ASPH"
 narration = """Add aspherical surfaces and exotic glasses, and you get lenses like this Summilux, at f/1.4.
 Same ideas, finer tuning."""
-scene = "real"
-lens = "dgauss"
-fstop = 2
-split_lens = "singlet"
-split_fstop = 4
-split = 0.5
-full = 1
-diagram = false
-scoreboard = false
-hud = false
-insets = false
-toolbox = false
-tail = 2.5
-
-[[chapter.key]]
-at = "@Add"
-dur = 1.2
-split = 0
+tail = 4.0
 
 [[chapter.key]]
 at = "@Summilux-0.3"
 dur = 0
 lens = "summilux"
 fstop = 1.4
-
-[[chapter.note]]
-at = "@Summilux"
-until = "end"
-on = "render"
-shape = "label"
-pos = [0.5, 0.92]
-text = "Leica Summilux 50 f/1.4 ASPH"
-color = "white"

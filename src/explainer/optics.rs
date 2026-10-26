@@ -161,26 +161,65 @@ fn variance_focus(rays: &[Ray], use_y: bool) -> Option<f64> {
     (den > 0.0).then(|| -num / den)
 }
 
-/// Image surfaces against image height: (h, tangential, sagittal, Petzval)
-/// as focus shifts (mm) from the sensor; T and S from narrow real fans.
-pub fn field_curves(lens: &Lens, object: Option<f64>, half_diag: f64) -> Vec<[f64; 4]> {
-    let m = lens.media(LAMBDA_D);
-    let petzval: f64 = lens.surfaces.iter().enumerate().map(|(i, s)| s.curvature() * (m.n[i + 1] - m.n[i]) / (m.n[i] * m.n[i + 1])).sum();
-    let par = lens.paraxial_data(LAMBDA_D);
-    let r = 0.25 * lens.iris.max_radius / par.entrance_pupil_mag;
-    (0..=12)
-        .filter_map(|k| {
-            let h = half_diag * k as f64 / 12.0;
-            let th = field_for_height(lens, h, object)?;
-            let src = Source::at_field(lens, th, object);
-            let q = chief_aim(lens, &src, LAMBDA_D)?;
-            let trace = |dx: f64, dy: f64| lens.trace_forward(src.ray_through(q + Vec3::new(dx, dy, 0.0)).0, LAMBDA_D, &m).map(|o| o.0);
-            let t: Vec<Ray> = (0..16).filter_map(|i| trace(0.0, r * (i as f64 / 7.5 - 1.0))).collect();
-            let s: Vec<Ray> = (0..16).filter_map(|i| trace(r * (i as f64 / 7.5 - 1.0), 0.0)).collect();
-            let (zt, zs) = (variance_focus(&t, true)?, variance_focus(&s, false)?);
-            Some([h, zt - lens.sensor_z, zs - lens.sensor_z, -petzval * h * h / 2.0])
+/// The drawn fan's rays as they leave the lens (the ones that pass).
+fn exit_rays(paths: &[RayPath]) -> Vec<Ray> {
+    paths
+        .iter()
+        .filter(|r| r.passed && r.pts.len() >= 2)
+        .map(|r| {
+            let (a, b) = (r.pts[r.pts.len() - 2], r.pts[r.pts.len() - 1]);
+            Ray { o: a, d: (b - a).normalize() }
         })
         .collect()
+}
+
+/// The sagittal counterpart of `fan`: rays across the pupil perpendicular
+/// to the meridional plane, as they leave the lens.
+fn sagittal_rays(lens: &Lens, object: Option<f64>, h: f64, count: usize) -> Vec<Ray> {
+    let Some(theta) = field_for_height(lens, h, object) else { return Vec::new() };
+    let src = Source::at_field(lens, theta, object);
+    let Some(q) = chief_aim(lens, &src, LAMBDA_D) else { return Vec::new() };
+    let r = rim(lens, object) * lens.iris.max_radius / lens.paraxial_data(LAMBDA_D).entrance_pupil_mag;
+    let m = lens.media(LAMBDA_D);
+    (0..count)
+        .filter_map(|k| {
+            let x = r * (2.0 * k as f64 / (count - 1) as f64 - 1.0);
+            lens.trace_forward(src.ray_through(q + Vec3::new(x, 0.0, 0.0)).0, LAMBDA_D, &m).map(|o| o.0)
+        })
+        .collect()
+}
+
+/// Rays per fan in the cross-section, and in the fans that define the image surfaces.
+pub const FAN_RAYS: usize = 11;
+
+/// Image surfaces against image height h: [h, T, S, Petzval] as focus
+/// shifts (mm) from the sensor, then the heights (mm) at which the T and S
+/// fans actually converge (their foci lie on the inclined chief ray, not at h).
+/// T and S are the least-spread planes of the full-aperture meridional fan
+/// drawn in the cross-section and of its sagittal counterpart (d line);
+/// Petzval is third-order theory.
+pub fn field_curves(lens: &Lens, object: Option<f64>, half_diag: f64) -> Vec<[f64; 6]> {
+    let m = lens.media(LAMBDA_D);
+    let petzval: f64 = lens.surfaces.iter().enumerate().map(|(i, s)| s.curvature() * (m.n[i + 1] - m.n[i]) / (m.n[i] * m.n[i + 1])).sum();
+    (0..=12)
+        .filter_map(|k| {
+            let frac = k as f64 / 12.0;
+            let h = half_diag * frac;
+            let t = exit_rays(&fan(lens, object, frac, half_diag, FAN_RAYS, &[LAMBDA_D], lens.sensor_z - 300.0));
+            let s = sagittal_rays(lens, object, h, FAN_RAYS);
+            let (zt, zs) = (variance_focus(&t, true)?, variance_focus(&s, false)?);
+            let mean_y = |rays: &[Ray], z: f64| rays.iter().map(|r| r.o.y + r.d.y * (z - r.o.z) / r.d.z).sum::<f64>() / rays.len() as f64;
+            Some([h, zt - lens.sensor_z, zs - lens.sensor_z, -petzval * h * h / 2.0, mean_y(&t, zt), mean_y(&s, zs)])
+        })
+        .collect()
+}
+
+/// Where a drawn fan (passing rays) comes to its tangential focus: (z, y).
+pub fn fan_focus(paths: &[RayPath]) -> Option<(f64, f64)> {
+    let rays = exit_rays(paths);
+    let z = variance_focus(&rays, true)?;
+    let y = rays.iter().map(|r| r.o.y + r.d.y * (z - r.o.z) / r.d.z).sum::<f64>() / rays.len() as f64;
+    Some((z, y))
 }
 
 /// Shape factor (c1 + c2) / (c1 − c2) of the first element.
@@ -212,4 +251,25 @@ pub fn ideal_grid(lens: &Lens, scene: &Scene, sensor: (f64, f64)) -> Vec<[[f32; 
         out.push([to_image(at(0.0, y)), to_image(at(aspect, y))]);
     }
     out
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tangential image surface at the corner is where the drawn
+    /// meridional fan comes to focus.
+    #[test]
+    fn tangential_curve_meets_the_drawn_fan() {
+        for (name, f) in [("01-singlet", 4.0), ("04-achromat", 8.0), ("05-landscape", 14.0), ("06-rapid-rectilinear", 8.0), ("11b-double-gauss", 2.0)] {
+            let mut l = Lens::load(&format!("lenses/explainer/{name}.lens")).unwrap();
+            l.prepare(f, 0, 0.0, 0.0, Some(2500.0), 0.0).unwrap();
+            let corner = field_curves(&l, Some(2500.0), 21.63).last().copied().unwrap();
+            let drawn = fan(&l, Some(2500.0), 1.0, 21.63, FAN_RAYS, &[LAMBDA_D], l.sensor_z - 300.0);
+            let (z, y) = fan_focus(&drawn).unwrap();
+            assert!((corner[1] - (z - l.sensor_z)).abs() < 0.1, "{name}: T {} vs fan focus {}", corner[1], z - l.sensor_z);
+            assert!((corner[4] - y).abs() < 0.1, "{name}: T drawn at height {} vs fan focus {y}", corner[4]);
+        }
+    }
 }

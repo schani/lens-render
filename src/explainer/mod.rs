@@ -383,7 +383,7 @@ pub struct Optics {
     axial: Vec<optics::RayPath>,
     /// The scoreboard (`metrics::scoreboard`).
     score: crate::metrics::Scoreboard,
-    curves: Vec<[f64; 4]>,
+    curves: Vec<[f64; 6]>,
     shape: Option<f64>,
     grid: Vec<[[f32; 2]; 2]>,
     elements: usize,
@@ -578,10 +578,10 @@ impl Explainer {
         let wl = |by: bool| if by { optics::RGB_WAVELENGTHS.to_vec() } else { vec![crate::glass::LAMBDA_D] };
         let mut fans = Vec::new();
         for f in [0.0, 0.7, 1.0] {
-            fans.push((f, optics::fan(&lens, object, f, hd, 11, &wl(false), z_start)));
+            fans.push((f, optics::fan(&lens, object, f, hd, optics::FAN_RAYS, &wl(false), z_start)));
         }
         for f in [0.0, 0.7, 1.0] {
-            fans.push((-1.0 - f, optics::fan(&lens, object, f, hd, 11, &wl(true), z_start)));
+            fans.push((-1.0 - f, optics::fan(&lens, object, f, hd, optics::FAN_RAYS, &wl(true), z_start)));
         }
         let c = self.camera(&k.scene);
         let o = Optics {
