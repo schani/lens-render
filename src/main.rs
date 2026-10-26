@@ -112,6 +112,9 @@ enum Cmd {
         /// Also write the numbers as JSON.
         #[arg(long)]
         json: Option<String>,
+        /// Also print RMS (also over 440–660 nm), lateral colour, distortion and flux at these fractions of the half-diagonal.
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<f64>,
     },
     /// Write the spherical aberration of a singlet against its bending as JSON.
     Bending {
@@ -152,15 +155,19 @@ fn main() -> Result<()> {
         }
         Cmd::Explain { dir } => explainer::record(Path::new(&dir))?,
         Cmd::Optimize { job } => optimize::run(&job)?,
-        Cmd::Numbers { lenses, focus, json } => {
+        Cmd::Numbers { lenses, focus, json, fields } => {
             let mut all = Vec::new();
+            let mut per_field = String::new();
             for spec in &lenses {
                 let Some((path, f)) = spec.rsplit_once('@') else { bail!("expected <lens>@<f-number>: {spec}") };
                 let lens = lens::Lens::load(path)?;
                 let f = if f == "max" { lens.max_aperture() } else { f.parse()? };
                 all.push(metrics::numbers(&lens, f, focus * 1000.0)?);
+                if !fields.is_empty() {
+                    per_field += &format!("\n{}", metrics::field_table(&lens, f, focus * 1000.0, &fields)?);
+                }
             }
-            print!("{}", metrics::table(&all));
+            print!("{}{per_field}", metrics::table(&all));
             if let Some(p) = json {
                 std::fs::write(p, serde_json::to_string_pretty(&all)?)?;
             }

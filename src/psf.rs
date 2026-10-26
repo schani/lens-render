@@ -103,9 +103,11 @@ fn stop_hit(lens: &Lens, ray: Ray, l: f64, m: &Media) -> Option<[f64; 2]> {
 fn aim_chief(lens: &Lens, src: &Source, l: f64, m: &Media, z_ep: f64) -> Option<Vec3> {
     let mut q = Vec3::new(0.0, 0.0, z_ep);
     let h = 1e-5;
+    let mut last = f64::INFINITY;
     for _ in 0..30 {
         let f = stop_hit(lens, src.ray_through(q).0, l, m)?;
-        if f[0].hypot(f[1]) < 1e-11 {
+        last = f[0].hypot(f[1]);
+        if last < 1e-11 {
             return Some(q);
         }
         let fx = stop_hit(lens, src.ray_through(q + Vec3::new(h, 0.0, 0.0)).0, l, m)?;
@@ -118,7 +120,8 @@ fn aim_chief(lens: &Lens, src: &Source, l: f64, m: &Media, z_ep: f64) -> Option<
         q.x -= (j[1][1] * f[0] - j[0][1] * f[1]) / det;
         q.y -= (-j[1][0] * f[0] + j[0][0] * f[1]) / det;
     }
-    None
+    // Distant objects: rounding in the ray direction limits the residual.
+    (last < 1e-8).then_some(q)
 }
 
 /// Point on the entrance-pupil plane the chief ray from `src` aims at.

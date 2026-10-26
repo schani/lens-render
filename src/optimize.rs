@@ -149,8 +149,26 @@ pub struct Job {
     /// Candidate glasses per row, tried by the global search.
     #[serde(default)]
     pub glass_choice: Vec<GlassChoice>,
+    /// Limits for elements of one material, e.g. a hard crystal.
+    #[serde(default)]
+    pub material_limits: Vec<MaterialLimits>,
     #[serde(default)]
     pub global: Option<Global>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaterialLimits {
+    pub glass: String,
+    /// Centre thickness (mm).
+    #[serde(default)]
+    pub max_thickness: Option<f64>,
+    /// Aspheric departure (mm) of surfaces bounding this material.
+    #[serde(default)]
+    pub max_departure: Option<f64>,
+    /// Clear semi-diameter (mm) of both faces, e.g. the size a crystal grows to.
+    #[serde(default)]
+    pub max_semi_diameter: Option<f64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -421,8 +439,8 @@ fn axial_focus(b: &Bundle) -> Option<f64> {
 /// least-squares blur of the axial point, 420–660 nm), from a coarser grid.
 fn render_focus(lens: &Lens, dist: f64) -> Option<f64> {
     let wls: Vec<(f64, f64)> = (0..13).map(|i| 420.0 + 20.0 * i as f64).map(|l| (l, crate::spectrum::cie_xyz(l)[1])).collect();
-    let mut heights = vec![0.0; lens.surfaces.len()];
-    axial_focus(&trace_bundle(lens, &Source::at_field(lens, 0.0, Some(dist)), &wls, 16, 1.0, false, &mut heights))
+    // Clipped by the real apertures over a grid wider than the paraxial pupil, as the renderer's bundle is.
+    axial_focus(&trace_bundle(lens, &Source::at_field(lens, 0.0, Some(dist)), &wls, 24, 1.3, true, &mut []))
 }
 
 /// Weighted spot on the plane `z`: offsets (mm) from the centroid of the rays
@@ -781,9 +799,11 @@ impl Problem {
     }
 
     pub fn eval(&self, x: &[f64]) -> Option<Eval> {
-        let lens = self.lens(x)?;
+        let mut lens = self.lens(x)?;
         let n = lens.surfaces.len();
         let z = render_focus(&lens, self.dist)?;
+        // Distortion and illumination use chief rays on the sensor.
+        lens.sensor_z = z;
         let mut res = Vec::new();
         let mut rms = Vec::new();
         let mut mtf = Vec::new();
@@ -879,6 +899,15 @@ impl Problem {
                 }
             }
         }
+        let limits = |i: usize| s[i].material.as_ref().and_then(|g| self.job.material_limits.iter().find(|m| Glass::parse(&m.glass).is_ok_and(|l| l.name() == g.name())));
+        for i in 0..n {
+            if let Some(max) = limits(i).and_then(|m| m.max_thickness) {
+                pen(format!("row {} {} max", i + 1, s[i].material.as_ref().unwrap().name()), s[i].thickness - max);
+            }
+            if let Some(max) = limits(i).and_then(|m| m.max_semi_diameter) {
+                pen(format!("row {} {} semi-diameter", i + 1, s[i].material.as_ref().unwrap().name()), sd(i).max(sd(i + 1)) - max);
+            }
+        }
         for &[row, lo, hi] in &self.job.thickness_limits {
             let t = s[row as usize - 1].thickness;
             pen(format!("row {row} min"), lo - t);
@@ -898,7 +927,8 @@ impl Problem {
             pen(format!("row {} outside the asphere", i + 1), a.outside);
             pen(format!("row {} surface slope", i + 1), a.slope - self.job.max_surface_slope.to_radians().tan());
             // Departures are small: 10× the usual weight (µm of departure ≡ 10 µm of RMS).
-            if let Some(max) = self.job.max_departure {
+            let bounding = [i.checked_sub(1).and_then(limits), limits(i)];
+            if let Some(max) = bounding.iter().flatten().filter_map(|m| m.max_departure).chain(self.job.max_departure).reduce(f64::min) {
                 pen(format!("row {} departure (0.1 mm)", i + 1), 10.0 * (a.departure - max));
             }
             if let Some(max) = self.job.max_departure_slope {
@@ -1326,7 +1356,8 @@ mod tests {
         // On the renderer's white-light focus, so axial colour limits the gain.
         assert!(asphere.rms[0] < 0.15 * sphere.rms[0]);
         assert!(shape.departure < 0.0151 && shape.lobes.len() <= 1, "{shape:?}", shape = (shape.departure, &shape.lobes));
-        assert!(limited.rms[0] > asphere.rms[0] && limited.rms[0] < sphere.rms[0]);
+        // Both end near the colour limit; the limited one may not beat the free one by more than noise.
+        assert!(limited.rms[0] > 0.98 * asphere.rms[0] && limited.rms[0] < sphere.rms[0]);
         assert!(limited.violations.is_empty() && asphere.violations.is_empty(), "{:?} {:?}", limited.violations, asphere.violations);
         // The output keeps the asphere.
         let text = Problem::new(job("conics = [2]\naspheres = [2]")).unwrap().finish(&asphere, "job", None);
@@ -1334,12 +1365,50 @@ mod tests {
         assert!(back.surfaces[1].is_aspheric() && (back.surfaces[1].conic - asphere.lens.surfaces[1].conic).abs() < 1e-5);
     }
 
+    /// Material limits bind wherever the material sits: an f/2.8 crown of a
+    /// limited semi-diameter shrinks to it, the other element does not.
+    #[test]
+    fn material_semi_diameter_limit() {
+        let job = |extra: &str| -> Job {
+            toml::from_str(&format!(
+                "name = \"t\"\noutput = \"u\"\nfstop = 2.8\nfields = [0.0, 1.0]\nvignetting = 1\ncurvatures = [2, 3, 4]\niterations = 30\n\
+                 start = \"\"\"\nstop 2 air 9\n30 5 N-LAK9 12\n-40 2 F2 12\n-200 45 air 12\n\"\"\"\n{extra}"
+            ))
+            .unwrap()
+        };
+        let free = Problem::new(job("")).unwrap().optimize(&mut |_| {}).unwrap();
+        let p = Problem::new(job("[[material_limits]]\nglass = \"N-LAK9\"\nmax_semi_diameter = 10.5")).unwrap();
+        let start = p.eval(&p.start()).unwrap();
+        assert!(start.violations.iter().any(|v| v.starts_with("row 2 N-LAK9 semi-diameter")), "{:?}", start.violations);
+        let e = p.optimize(&mut |_| {}).unwrap();
+        let sd = |e: &Eval, i: usize| e.lens.surfaces[i].semi_diameter;
+        println!("free {:.2}/{:.2}, limited {:.2}/{:.2}/{:.2}", sd(&free, 1), sd(&free, 2), sd(&e, 1), sd(&e, 2), sd(&e, 3));
+        assert!(sd(&free, 1).max(sd(&free, 2)) > 10.0);
+        assert!(sd(&e, 1) < 10.55 && sd(&e, 2) < 10.55, "{:?}", e.violations);
+        assert!(sd(&e, 3) > 10.6);
+    }
+
+    /// The merit's sensor plane is the renderer's (`Lens::best_focus`), also
+    /// for a fast aspheric lens whose real pupil differs from the paraxial one.
+    #[test]
+    fn render_focus_matches_best_focus() {
+        for (text, f) in [(include_str!("../lenses/summilux-50-asph.lens"), 1.4), (include_str!("../lenses/explainer/11b-double-gauss.lens"), 2.0)] {
+            let mut lens = Lens::parse(text).unwrap();
+            lens.prepare(f, 0, 0.0, 0.0, Some(1e6), 0.0).unwrap();
+            let (a, b) = (render_focus(&lens, 1e6).unwrap(), lens.best_focus(Some(1e6)).unwrap());
+            println!("{}: render_focus {a:.4}, best_focus {b:.4}", lens.name);
+            assert!((a - b).abs() < 0.005);
+        }
+    }
+
     /// The merit's corner illumination and distortion agree with
-    /// `metrics::numbers` (up to soft apertures and the paraxial field angle).
+    /// `metrics::numbers` (up to soft apertures and the paraxial field angle),
+    /// also when the start's image distance is far from the focus.
     #[test]
     fn illumination_and_distortion_match_numbers() {
         let lens_text = include_str!("../lenses/explainer/07-triplet.lens");
         let rows: String = lens_text.lines().filter(|l| !l.starts_with('#') && !l.starts_with('@')).map(|l| format!("{l}\n")).collect();
+        let rows = rows.replace("42.2078", "30.0");
         let job: Job = toml::from_str(&format!("name = \"t\"\noutput = \"u\"\nfstop = 3.5\nmin_corner_illumination = 1.0\nmax_distortion = 0.0\nstart = \"\"\"\n{rows}\"\"\"\n")).unwrap();
         let p = Problem::new(job).unwrap();
         let e = p.eval(&p.start()).unwrap();

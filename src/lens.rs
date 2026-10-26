@@ -845,6 +845,13 @@ impl Lens {
     #[inline]
     fn intersect(&self, i: usize, ray: &Ray) -> Option<(Vec3, Vec3)> {
         let s = &self.surfaces[i];
+        // Distant origins (far objects): start just before the surface, so the
+        // quadratic does not cancel catastrophically.
+        let z0 = s.z - 2.0 * s.radius.abs() - 1.0;
+        if ray.d.z > 0.0 && ray.o.z < z0 - 1e3 {
+            let o = ray.o + ray.d * ((z0 - ray.o.z) / ray.d.z);
+            return self.intersect(i, &Ray { o, d: ray.d });
+        }
         if s.is_aspheric() {
             return Self::intersect_asphere(s, ray);
         }

@@ -52,6 +52,7 @@ penalties (1000 per mm of violation unless noted).
 | `min_back_focus` | 15 | last vertex to sensor, mm |
 | `min_glass_centre`, `min_glass_edge`, `max_glass`, `min_air` | 1.5, 1, 20, 0.1 | mm |
 | `thickness_limits = [[row, min, max]]` | – | single rows |
+| `[[material_limits]]` `glass`, `max_thickness`, `max_departure`, `max_semi_diameter` | – | elements of one material (e.g. a crystal hard to figure), wherever the glass choice puts it |
 | `seidel_weights` | – | weights on W040 … W111 at full field |
 
 The geometric MTF is the Fourier transform of the weighted spot (no

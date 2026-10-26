@@ -269,6 +269,37 @@ pub fn table(all: &[Numbers]) -> String {
     t
 }
 
+/// Per-field check of `lens` at `fstop`, focused on `dist` mm as rendered:
+/// RMS spot (µm) at F, e, C 1:2:1, over 440–660 nm weighted by luminance and
+/// flat (purple fringes), lateral colour 440–660 nm (µm), distortion (%) and
+/// flux relative to the centre (vignetting and cos⁴, distortion excluded).
+pub fn field_table(lens: &Lens, fstop: f64, dist: f64, fields: &[f64]) -> Result<String> {
+    let mut lens = lens.clone();
+    lens.prepare(fstop, 0, 0.0, 0.0, Some(dist), 0.0)?;
+    let k = paraxial_scale(&lens, dist).context("chief ray")?;
+    let band: Vec<f64> = (0..12).map(|i| 440.0 + 20.0 * i as f64).collect();
+    let lum: Vec<(f64, f64)> = band.iter().map(|&l| (l, crate::spectrum::cie_xyz(l)[1])).collect();
+    let flat: Vec<(f64, f64)> = band.iter().map(|&l| (l, 1.0)).collect();
+    let f0 = flux(&lens, 0.0, dist).unwrap_or(f64::NAN);
+    let mut t = format!("{} f/{fstop}\n| field | RMS FeC | RMS 440–660 ȳ | RMS 440–660 flat | lat. col. µm | distortion % | flux |\n|---|---|---|---|---|---|---|\n", lens.name);
+    for &f in fields {
+        let h = f * HALF_DIAG;
+        let z = Some(lens.sensor_z);
+        let rms = |w: &[(f64, f64)]| rms_spot_um(&lens, h, Some(dist), w, z).unwrap_or(f64::NAN);
+        let th = field_for_height(&lens, h, Some(dist));
+        let (lat, dist_pct, fl) = match th.filter(|_| f > 0.0) {
+            Some(th) => {
+                let src = Source::at_field(&lens, th, Some(dist));
+                let y = |l: f64| chief_image(&lens, &src, l).map_or(f64::NAN, |p| p[1]);
+                ((y(660.0) - y(440.0)) * 1000.0, (h / (k * th.tan()) - 1.0) * 100.0, flux(&lens, th, dist).unwrap_or(f64::NAN) / f0)
+            }
+            None => (0.0, 0.0, 1.0),
+        };
+        t += &format!("| {f:.2} | {:.1} | {:.1} | {:.1} | {lat:+.1} | {dist_pct:+.2} | {fl:.2} |\n", rms(&SPOT_WAVELENGTHS), rms(&lum), rms(&flat));
+    }
+    Ok(t)
+}
+
 #[derive(Serialize)]
 pub struct BendPoint {
     /// Coddington shape factor (c1 + c2) / (c1 − c2): −1 flat front, 0 equiconvex, +1 flat back.
@@ -361,6 +392,20 @@ mod tests {
         l.sensor_half = (18.0, 12.0);
         l.prepare(fstop, 0, 0.0, 0.0, Some(2500.0), 0.0).unwrap();
         l
+    }
+
+    /// Distant objects (1 km, 100 km) trace like near-infinite ones: field
+    /// RMS, distortion and illumination exist and agree.
+    #[test]
+    fn distant_object() {
+        let lens = Lens::parse(include_str!("../lenses/explainer/11b-double-gauss.lens")).unwrap();
+        let (a, b) = (numbers(&lens, 2.0, 1e6).unwrap(), numbers(&lens, 2.0, 1e8).unwrap());
+        println!("1 km {:?} {:.3}, 100 km {:?} {:.3}", a.rms_um, a.distortion_pct, b.rms_um, b.distortion_pct);
+        for (x, y) in a.rms_um.iter().zip(b.rms_um) {
+            assert!(x.is_finite() && (x - y).abs() < 0.2);
+        }
+        assert!((a.distortion_pct - b.distortion_pct).abs() < 0.01 && (a.relative_illumination - b.relative_illumination).abs() < 0.01);
+        assert!(field_table(&lens, 2.0, 1e6, &[0.0, 1.0]).unwrap().lines().count() == 5);
     }
 
     /// The singlet is bad everywhere; the landscape lens's corners are sharp
