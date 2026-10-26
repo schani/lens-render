@@ -4,7 +4,7 @@
 
 - **There is no published numerical prescription.** The patent for this lens has no data table.
 - **The 2023 lens uses the same optical formula as the 2004 Karbe design.** Both Leica lens-cut drawings give the same radii and spacings. They also show the same asphere profile.
-- `summilux-50-asph.lens` is therefore a **reconstruction**. Its geometry is fitted to Leica's own vector lens drawing. Its glasses (nd/vd) are fitted values, not known ones. It reproduces Leica's focal length, entrance pupil, distortion, vignetting, close-focus magnification and the patent's partial focal lengths. It is sharper on axis than Leica's MTF (see "Validation").
+- `summilux-50-asph.lens` is therefore a **reconstruction**. Its geometry is fitted to Leica's own vector lens drawing. Its glasses are refit to Leica's 2023 MTF (catalogue types plus two nd/vd fits; see "MTF refit"), not known ones. It reproduces Leica's focal length, entrance pupil, distortion, vignetting, close-focus magnification and the patent's partial focal lengths. Its MTF meets or beats Leica's at most points, with gaps at mid-field 40 lp/mm.
 
 ## Sources
 
@@ -117,6 +117,15 @@ z(r) = c r² / (1 + √(1 − (1+k) c² r²)) + A4 r⁴ + A6 r⁶, with c = 1/R 
 - At f/5.6 the reconstruction has 40 lp/mm centre 0.83 vs 0.77.
 
 Interpretation: the glass fit traded field performance for on-axis correction. With only nd/vd and a Cauchy dispersion model, it also misses the real lens's secondary spectrum and spherochromatism. **Use Leica's MTF as a qualitative check, not a pass/fail target.** Matching it closely would need the real glasses, which are unknown. Fitting glasses to Leica's MTF is possible, but then that MTF is no longer independent validation.
+
+## MTF refit
+
+The first glass fit (above) was sharper than Leica on axis but clearly worse at mid-field: at f/1.4, 10 mm, sagittal 20 lp/mm 0.56 vs Leica's 0.73, and 40 lp/mm 0.09 vs 0.33. So the lens was refit to be at least as good as Leica's published MTF, which makes that MTF a fitting target, no longer an independent check.
+
+- **Variables.** Glasses chosen from Schott/Ohara catalogue types near the old fits (APD glass N-FK51A in L2, as the patent says; n > 1.80 in L1, L5, L6), two continuous nd/vd glasses where no catalogue type fit; asphere A4–A10 within 2 µm of the drawn profile; radii within 1 % (R2 and R7 within 5 %); spacings within drawing precision; EFL, distortion, vignetting held.
+- **Merit.** One-sided against Leica's 2023 MTF (S and T, 5/10/20/40 lp/mm, all heights, f/1.4, f/2.8, f/5.6): only shortfalls count (`mtf_target` in `docs/optimiser.md`).
+- **Result.** 240 of 336 published points met. At f/1.4, 10 mm: sagittal 20 lp/mm 0.76 (Leica 0.73), 40 lp/mm 0.33 (0.33); tangential 0.85 / 0.59 (0.77 / 0.45). Centre 40 lp/mm 0.86 (Leica 0.64). Corner (21 mm) at or above Leica. The largest remaining gap: f/2.8, 10 mm, sagittal 40 lp/mm, 0.46 vs 0.65.
+- **Cost.** White-light RMS at 2.5 m, f/1.4: centre 4.4 µm (was 2.5), 0.7 field 11.3 µm (13.6), corner 41 µm (32): a wider faint halo, while the corner MTF stays at or above Leica's. The refit was stopped at the best design found so far, not at a converged optimum.
 
 ## Uncertainties
 

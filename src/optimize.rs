@@ -131,6 +131,26 @@ pub struct Job {
     pub mtf_weight: f64,
     #[serde(default = "d_mtf_freqs")]
     pub mtf_freqs: Vec<f64>,
+    /// One-sided MTF targets from published data.
+    #[serde(default)]
+    pub mtf_target: Option<MtfTarget>,
+    /// Clear apertures vary (false: they stay as in the start design).
+    #[serde(default = "d_true")]
+    pub vary_apertures: bool,
+    /// Largest relative change of every radius from the start design, and
+    /// per row: [row, change].
+    #[serde(default)]
+    pub max_radius_change: Option<f64>,
+    #[serde(default)]
+    pub radius_change_limits: Vec<[f64; 2]>,
+    /// Aspheric surfaces: largest sag change (mm) from the start design's
+    /// profile over the clear aperture.
+    #[serde(default)]
+    pub max_profile_change: Option<f64>,
+    /// Lens file the radius and profile changes are measured from, relative
+    /// to the job file (default: the start design).
+    #[serde(default)]
+    pub origin: Option<String>,
     /// |distortion| (%) at every field.
     #[serde(default)]
     pub max_distortion: Option<f64>,
@@ -143,6 +163,16 @@ pub struct Job {
     /// Spectral stop parameters that vary: any of "inner", "lo", "hi".
     #[serde(default)]
     pub spectral_stop: Vec<String>,
+    /// SCRATCH: rows whose nd/vd model glass varies, and [row, nd min, nd max, vd min, vd max].
+    #[serde(default)]
+    pub model_glasses: Vec<usize>,
+    #[serde(default)]
+    pub glass_bounds: Vec<[f64; 5]>,
+    #[serde(default)]
+    pub glass_map_scale: Option<f64>,
+    /// SCRATCH: [row, ΔPgF] of model glasses (normal-line partial dispersion + this).
+    #[serde(default)]
+    pub glass_dp: Vec<[f64; 2]>,
     /// Luminous transmission of the spectral stop, wide open.
     #[serde(default)]
     pub min_stop_transmission: Option<f64>,
@@ -169,6 +199,108 @@ pub struct MaterialLimits {
     /// Clear semi-diameter (mm) of both faces, e.g. the size a crystal grows to.
     #[serde(default)]
     pub max_semi_diameter: Option<f64>,
+}
+
+/// Published MTF (white light, object at infinity) the design should reach:
+/// residual `weight` × (reference + `margin` − ours) where ours falls short,
+/// at every f-number, image height, frequency, sagittal and tangential.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MtfTarget {
+    /// JSON as for `lens-render mtf --reference` ({"f/1.4": {"5S": […], …},
+    /// "heights_mm": […]}, percent), relative to the job file.
+    pub reference: String,
+    pub fstops: Vec<f64>,
+    /// Image heights (mm), interpolated in the reference; default: its own.
+    #[serde(default)]
+    pub heights: Vec<f64>,
+    /// Frequencies (lp/mm) to use; default: all of the reference's.
+    #[serde(default)]
+    pub freqs: Vec<f64>,
+    /// µm of RMS per unit of contrast short of the target.
+    pub weight: f64,
+    #[serde(default)]
+    pub margin: f64,
+    /// Pupil grid (rays per side, over 1.3 × the paraxial pupil).
+    #[serde(default = "d_mtf_grid")]
+    pub grid: usize,
+}
+
+/// Target contrasts at one f-number: per height, per (frequency, tangential).
+#[derive(Clone)]
+struct MtfGoal {
+    fstop: f64,
+    heights: Vec<f64>,
+    freqs: Vec<(f64, bool)>,
+    /// [height][freq] contrast (0–1).
+    values: Vec<Vec<f64>>,
+}
+
+/// White-light wavelengths of the MTF target (as `lens-render mtf`), CIE ȳ weighted.
+fn mtf_wavelengths() -> Vec<(f64, f64)> {
+    crate::mtf::WAVELENGTHS.iter().map(|&l| (l, crate::spectrum::cie_xyz(l)[1])).collect()
+}
+
+/// Reads the targets of `t` from its reference file.
+fn mtf_goals(t: &MtfTarget) -> Result<Vec<MtfGoal>> {
+    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&t.reference).with_context(|| format!("reading {}", t.reference))?)?;
+    let ref_h: Vec<f64> = r["heights_mm"].as_array().context("reference: heights_mm")?.iter().filter_map(|v| v.as_f64()).collect();
+    let heights = if t.heights.is_empty() { ref_h.clone() } else { t.heights.clone() };
+    let mut goals = Vec::new();
+    for &f in &t.fstops {
+        let data = r.get(format!("f/{f}")).and_then(|d| d.as_object()).with_context(|| format!("reference has no f/{f}"))?;
+        let mut freqs = Vec::new();
+        let mut curves = Vec::new();
+        for (key, vals) in data {
+            let (q, tan) = match key.strip_suffix('S') {
+                Some(q) => (q, false),
+                None => (key.strip_suffix('T').with_context(|| format!("reference key {key}"))?, true),
+            };
+            let q: f64 = q.parse()?;
+            if !t.freqs.is_empty() && !t.freqs.contains(&q) {
+                continue;
+            }
+            freqs.push((q, tan));
+            let v: Vec<f64> = vals.as_array().context("reference values")?.iter().filter_map(|v| v.as_f64()).collect();
+            if v.len() != ref_h.len() {
+                bail!("reference f/{f} {key}: {} values for {} heights", v.len(), ref_h.len());
+            }
+            curves.push(v);
+        }
+        let interp = |v: &[f64], h: f64| -> f64 {
+            let i = ref_h.partition_point(|&x| x < h).clamp(1, ref_h.len() - 1);
+            let t = ((h - ref_h[i - 1]) / (ref_h[i] - ref_h[i - 1])).clamp(0.0, 1.0);
+            (v[i - 1] + t * (v[i] - v[i - 1])) / 100.0
+        };
+        let values = heights.iter().map(|&h| curves.iter().map(|c| interp(c, h)).collect()).collect();
+        goals.push(MtfGoal { fstop: f, heights: heights.clone(), freqs, values });
+    }
+    Ok(goals)
+}
+
+/// Sagittal and tangential MTF at image height `h` of `lens` (iris and sensor
+/// as set): geometric MTF of the white-light spot from a soft-edged pupil grid,
+/// times the diffraction limit at the working f-number. None if no light passes.
+fn target_mtf(lens: &Lens, dist: f64, h: f64, freqs: &[(f64, bool)], grid: usize) -> Option<Vec<f64>> {
+    let theta = crate::psf::field_for_height(lens, h, Some(dist))?;
+    let wls = mtf_wavelengths();
+    let rays = trace_soft(lens, &Source::at_field(lens, theta, Some(dist)), &wls, grid, 1.3);
+    let total: f64 = rays.iter().map(|r| r.w).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let z = lens.sensor_z;
+    let pts: Vec<(f64, f64, f64)> = rays
+        .iter()
+        .filter_map(|r| {
+            let e = r.exit.filter(|_| r.w > 0.0)?;
+            let t = (z - e.o.z) / e.d.z;
+            Some((e.o.x + e.d.x * t, e.o.y + e.d.y * t, r.w / total))
+        })
+        .collect();
+    let n_w = lens.working_fnumber();
+    let wsum: f64 = wls.iter().map(|w| w.1).sum();
+    Some(freqs.iter().map(|&(q, tan)| spot_mtf(&pts, q, tan) * wls.iter().map(|&(l, w)| w * crate::psf::diffraction_limit_mtf(q, l, n_w)).sum::<f64>() / wsum).collect())
 }
 
 #[derive(Clone, Deserialize)]
@@ -251,6 +383,12 @@ fn d_surface_slope() -> f64 {
 fn d_mtf_freqs() -> Vec<f64> {
     vec![10.0, 30.0]
 }
+fn d_true() -> bool {
+    true
+}
+fn d_mtf_grid() -> usize {
+    32
+}
 fn d_keep() -> usize {
     5
 }
@@ -276,6 +414,8 @@ enum Var {
     Inner,
     BandLo,
     BandHi,
+    Nd(usize),
+    Vd(usize),
 }
 
 #[derive(Clone)]
@@ -511,6 +651,10 @@ pub struct Problem {
     choices: Vec<(usize, Vec<Glass>)>,
     /// Surfaces that are or may become aspheric (fixed, so the residuals are).
     aspheric: Vec<bool>,
+    /// MTF targets per f-number.
+    goals: Vec<MtfGoal>,
+    /// The start design as written (radius and profile changes).
+    origin: Lens,
 }
 
 /// One evaluated design.
@@ -524,6 +668,8 @@ pub struct Eval {
     pub mtf: Vec<f64>,
     /// Constraints that are violated.
     pub violations: Vec<String>,
+    /// MTF targets: (f-number, height, frequency, tangential, ours, target).
+    pub targets: Vec<(f64, f64, f64, bool, f64, f64)>,
 }
 
 /// A local minimum found by the global search.
@@ -676,8 +822,13 @@ impl Problem {
                 bail!("symmetric: list only rows in front of the stop");
             }
         }
-        // Every lens surface's clear aperture varies.
-        vars.extend((0..n).filter(|&i| !base.surfaces[i].is_stop).map(Var::SemiDiameter));
+        for &r in &job.model_glasses {
+            vars.push(Var::Nd(r - 1));
+            vars.push(Var::Vd(r - 1));
+        }
+        if job.vary_apertures {
+            vars.extend((0..n).filter(|&i| !base.surfaces[i].is_stop).map(Var::SemiDiameter));
+        }
         // Aspheric terms as their sag at the start's rim, so steps are comparable.
         let norm = vars
             .iter()
@@ -711,7 +862,15 @@ impl Problem {
             None => SPOT_WAVELENGTHS.to_vec(),
         };
         let aspheric = (0..n).map(|i| base.surfaces[i].is_aspheric() || vars.iter().any(|v| matches!(v, Var::Conic(j) | Var::Aspheric(j, _) if *j == i || (job.symmetric && 2 * k - *j == i)))).collect();
-        Ok(Problem { job, base, vars, norm, dist, fields, wls, choices, aspheric })
+        let goals = match &job.mtf_target {
+            Some(t) => mtf_goals(t)?,
+            None => Vec::new(),
+        };
+        let origin = match &job.origin {
+            Some(path) => Lens::load(path)?,
+            None => base.clone(),
+        };
+        Ok(Problem { job, base, vars, norm, dist, fields, wls, choices, aspheric, goals, origin })
     }
 
     fn start(&self) -> Vec<f64> {
@@ -732,6 +891,8 @@ impl Problem {
                 Var::Inner => f.inner,
                 Var::BandLo => f.lo,
                 Var::BandHi => f.hi,
+                Var::Nd(i) => lens.surfaces[i].material.as_ref().unwrap().nd(),
+                Var::Vd(i) => lens.surfaces[i].material.as_ref().unwrap().abbe(),
             })
             .collect()
     }
@@ -756,6 +917,16 @@ impl Problem {
                 Var::Inner => lens.spectral_stop.as_mut()?.inner = x.clamp(0.0, 1.0),
                 Var::BandLo => lens.spectral_stop.as_mut()?.lo = x,
                 Var::BandHi => lens.spectral_stop.as_mut()?.hi = x,
+                Var::Nd(i) => {
+                    let vd = lens.surfaces[i].material.as_ref().unwrap().abbe();
+                    let dp = self.job.glass_dp.iter().find(|g| g[0] as usize == i + 1).map_or(0.0, |g| g[1]);
+                    lens.surfaces[i].material = Some(Glass::model(&format!("{x:.5}/{vd:.2}/{dp}"), x, vd, dp));
+                }
+                Var::Vd(i) => {
+                    let nd = lens.surfaces[i].material.as_ref().unwrap().nd();
+                    let dp = self.job.glass_dp.iter().find(|g| g[0] as usize == i + 1).map_or(0.0, |g| g[1]);
+                    lens.surfaces[i].material = Some(Glass::model(&format!("{nd:.5}/{x:.2}/{dp}"), nd, x, dp));
+                }
             }
         }
         if let Some(f) = lens.spectral_stop.as_mut().filter(|f| f.lo > f.hi - 1.0) {
@@ -861,7 +1032,8 @@ impl Problem {
                 violations.push(format!("{what} by {v:.3}"));
             }
         };
-        for (frac, pass) in light {
+        // Fixed apertures: as they are, whatever they pass.
+        for (frac, pass) in light.into_iter().filter(|_| self.job.vary_apertures) {
             pen(format!("vignetting at {frac}"), LIGHT * (0.99 - self.job.vignetting * frac * frac - pass));
         }
         // Sag at radius r, or how far r lies outside the surface.
@@ -961,11 +1133,61 @@ impl Problem {
         if let (Some(min), Some(f)) = (self.job.min_stop_transmission, &lens.spectral_stop) {
             pen("spectral stop transmission".into(), LIGHT * (min - f.luminous(lens.iris.radius / s[lens.stop_index].semi_diameter)));
         }
+        for &r in &self.job.model_glasses {
+            let g = s[r - 1].material.as_ref().unwrap();
+            let (nd, vd) = (g.nd(), g.abbe());
+            let d = crate::glass_extra::EXTRA.iter().map(|(n, _, _)| Glass::parse(n).unwrap()).map(|c| ((c.nd() - nd) / 0.02).hypot((c.abbe() - vd) / 2.0)).fold(f64::INFINITY, f64::min);
+            if let Some(k) = self.job.glass_map_scale {
+                pen(format!("row {r} glass map"), d / k - 1.0);
+            }
+        }
+        for &[r, n0, n1, v0, v1] in &self.job.glass_bounds {
+            let g = s[r as usize - 1].material.as_ref().unwrap();
+            pen(format!("row {r} nd"), (n0 - g.nd()).max(g.nd() - n1) * 100.0);
+            pen(format!("row {r} vd"), (v0 - g.abbe()).max(g.abbe() - v1) * 0.1);
+        }
+        {
+            let o = &self.origin;
+            for i in (0..n).filter(|&i| !s[i].is_stop && o.surfaces[i].radius != 0.0) {
+                let limit = self.job.radius_change_limits.iter().find(|l| l[0] as usize == i + 1).map(|l| l[1]).or(self.job.max_radius_change);
+                if let Some(max) = limit {
+                    // Relative change, as 0.1 mm per % (a penalty of 1000 µm per 10 %).
+                    pen(format!("row {} radius change (10 %)", i + 1), 10.0 * ((s[i].radius / o.surfaces[i].radius - 1.0).abs() - max));
+                }
+            }
+            if let Some(max) = self.job.max_profile_change {
+                for i in (0..n).filter(|&i| self.aspheric[i]) {
+                    let h = o.surfaces[i].semi_diameter;
+                    let change = (0..=32).map(|j| (h * j as f64 / 32.0).powi(2)).map(|u| match (s[i].sag_u(u), o.surfaces[i].sag_u(u)) {
+                        (Some(a), Some(b)) => (a - b).abs(),
+                        _ => 1.0,
+                    });
+                    // µm of profile ≡ 10 µm of RMS, as departures.
+                    pen(format!("row {} profile change (0.1 mm)", i + 1), 10.0 * (change.fold(0.0, f64::max) - max));
+                }
+            }
+        }
         if !self.job.seidel_weights.is_empty() {
             let w = crate::seidel::seidel(&lens, field_angle(1.0, self.dist, self.job.efl), Some(self.dist));
             res.extend(self.job.seidel_weights.iter().zip(w.sum).map(|(k, v)| k * v));
         }
-        Some(Eval { lens, residuals: res, rms, mtf, violations })
+        let mut targets = Vec::new();
+        if let Some(t) = &self.job.mtf_target {
+            for g in &self.goals {
+                // Iris at this f-number, refocused as the renderer would.
+                let mut l = lens.clone();
+                l.iris = Iris::new(0, 0.0, 0.0, l.stop_radius_for_fstop(g.fstop), true);
+                l.sensor_z = render_focus(&l, self.dist)?;
+                for (&h, goal) in g.heights.iter().zip(&g.values) {
+                    let ours = target_mtf(&l, self.dist, h, &g.freqs, t.grid).unwrap_or_else(|| vec![0.0; g.freqs.len()]);
+                    for ((&(q, tan), &m), &v) in g.freqs.iter().zip(&ours).zip(goal) {
+                        res.push(t.weight * (v + t.margin - m).max(0.0));
+                        targets.push((g.fstop, h, q, tan, m, v));
+                    }
+                }
+            }
+        }
+        Some(Eval { lens, residuals: res, rms, mtf, violations, targets })
     }
 
     /// `v` of variable `var` nudged by the relative amount `u` (additively for
@@ -976,6 +1198,8 @@ impl Problem {
             Var::Conic(_) | Var::Aspheric(..) => v + 0.1 * u,
             Var::Inner => (v + 0.5 * u).clamp(0.0, 1.0),
             Var::BandLo | Var::BandHi => v + 50.0 * u,
+            Var::Nd(_) => v + 0.05 * u,
+            Var::Vd(_) => v * (1.0 + u),
         }
     }
 
@@ -1023,6 +1247,9 @@ impl Problem {
             }
         }
         log(&format!("end: merit {:.4e}, RMS {:?} µm", merit(&best), round1(&best.rms)));
+        if let Some(summary) = target_summary(&best) {
+            log(&format!("MTF targets: {summary}"));
+        }
         if !best.violations.is_empty() {
             log(&format!("violated: {}", best.violations.join(", ")));
         }
@@ -1055,6 +1282,8 @@ impl Problem {
                 Var::SemiDiameter(_) => f64::INFINITY,
                 Var::Conic(_) | Var::Aspheric(..) | Var::Inner => d,
                 Var::BandLo | Var::BandHi => 100.0 * d,
+                Var::Nd(_) => d,
+                Var::Vd(_) => 100.0 * d,
             };
             (x - y).abs() <= tol
         })
@@ -1120,6 +1349,8 @@ impl Problem {
                         Var::Thickness(_) | Var::SemiDiameter(_) | Var::Inner => 1e-5,
                         Var::Conic(_) | Var::Aspheric(..) => 1e-6,
                         Var::BandLo | Var::BandHi => 1e-3,
+                        Var::Nd(_) => 1e-6,
+                        Var::Vd(_) => 1e-4,
                     };
                     let mut xh = x.clone();
                     xh[j] += h;
@@ -1200,6 +1431,9 @@ impl Problem {
             let mtf: Vec<String> = self.job.fields.iter().zip(&e.mtf).map(|(f, m)| format!("{f}: {m:.2}")).collect();
             t += &format!("# Geometric MTF (mean of {:?} lp/mm, S and T): {}.\n#\n", self.job.mtf_freqs, mtf.join(", "));
         }
+        if let Some(summary) = target_summary(e) {
+            t += &format!("# MTF targets: {summary}.\n#\n");
+        }
         if let Some((place, merit, start)) = rank {
             t += &format!("# Global search: place {place}, merit {merit:.4e} (start {start}, seed {}).\n#\n", self.job.global.as_ref().map_or(0, |g| g.seed));
         }
@@ -1221,6 +1455,14 @@ impl Problem {
         }
         t
     }
+}
+
+/// How many MTF targets are met, and the largest shortfall.
+fn target_summary(e: &Eval) -> Option<String> {
+    let worst = e.targets.iter().max_by(|a, b| (a.5 - a.4).total_cmp(&(b.5 - b.4)))?;
+    let met = e.targets.iter().filter(|t| t.4 >= t.5).count();
+    let (f, h, q, tan, m, v) = *worst;
+    Some(format!("{met} of {} met; largest shortfall {:.3} (f/{f}, {h} mm, {q} lp/mm {}: {m:.3} vs {v:.3})", e.targets.len(), v - m, if tan { "T" } else { "S" }))
 }
 
 fn merit(e: &Eval) -> f64 {
@@ -1259,8 +1501,15 @@ fn solve(mut m: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
 
 /// Runs a job file and writes its output lens next to it.
 pub fn run(job_path: &str) -> Result<()> {
-    let job: Job = toml::from_str(&std::fs::read_to_string(job_path).with_context(|| format!("reading {job_path}"))?)?;
-    let out = Path::new(job_path).parent().unwrap_or(Path::new(".")).join(&job.output);
+    let mut job: Job = toml::from_str(&std::fs::read_to_string(job_path).with_context(|| format!("reading {job_path}"))?)?;
+    let dir = Path::new(job_path).parent().unwrap_or(Path::new("."));
+    let out = dir.join(&job.output);
+    if let Some(t) = job.mtf_target.as_mut() {
+        t.reference = dir.join(&t.reference).to_string_lossy().to_string();
+    }
+    if let Some(o) = job.origin.as_mut() {
+        *o = dir.join(&o).to_string_lossy().to_string();
+    }
     let global = job.global.clone();
     let p = Problem::new(job)?;
     if let Some(g) = global {
@@ -1417,6 +1666,63 @@ mod tests {
         let n = crate::metrics::numbers(&Lens::parse(lens_text).unwrap(), 3.5, 2500.0).unwrap();
         println!("illumination {ri:.3} vs {:.3}, |distortion| {dist:.3} vs {:.3} %", n.relative_illumination, n.distortion_pct);
         assert!((ri - n.relative_illumination).abs() < 0.03 && (dist - n.distortion_pct.abs()).abs() < 0.1);
+    }
+
+    /// A detuned achromat misses an MTF target on axis and off axis; with
+    /// the target as the only merit it ends meeting it. Targets met cost nothing.
+    #[test]
+    fn mtf_target_is_met() {
+        let path = std::env::temp_dir().join(format!("mtf-target-{}.json", std::process::id()));
+        let reference = |c: f64| format!(r#"{{"heights_mm": [0, 5], "f/8": {{"20S": [{c}, {c}], "20T": [{c}, {c}]}}, "f/16": {{"10S": [{c}, {c}], "10T": [{c}, {c}]}}}}"#);
+        let job = |c: f64| -> Job {
+            std::fs::write(&path, reference(c)).unwrap();
+            toml::from_str(&format!(
+                "name = \"t\"\noutput = \"u\"\nfstop = 8\nfocus = 1000\nfields = [0.0]\nrms_weight = 0\ncurvatures = [2, 3, 4]\niterations = 40\n\
+                 start = \"\"\"\nstop 0.5 air 4\n25 4.0 N-BK7 6\n-50 2.0 F2 6\n-200 45 air 6\n\"\"\"\n\
+                 [mtf_target]\nreference = {:?}\nfstops = [8, 16]\nweight = 100\nmargin = 0.01\n",
+                path.to_string_lossy()
+            ))
+            .unwrap()
+        };
+        let p = Problem::new(job(85.0)).unwrap();
+        let start = p.eval(&p.start()).unwrap();
+        let end = p.optimize(&mut |_| {}).unwrap();
+        let worst = |e: &Eval| e.targets.iter().map(|t| t.5 - t.4).fold(f64::MIN, f64::max);
+        println!("{:?}\n{:?}", start.targets, end.targets);
+        assert_eq!(start.targets.len(), 8);
+        // The target is beyond this doublet; the merit must still close much of the gap.
+        assert!(worst(&start) > 0.05 && worst(&end) < 0.6 * worst(&start), "worst shortfall {} → {}", worst(&start), worst(&end));
+        let easy = Problem::new(job(1.0)).unwrap();
+        // A target residual is zero exactly where the MTF clears target + margin.
+        let e = easy.eval(&easy.start()).unwrap();
+        let r = &e.residuals[e.residuals.len() - 8..];
+        assert!(r.iter().zip(&e.targets).all(|(r, t)| (*r == 0.0) == (t.4 >= t.5 + 0.01)));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The MTF target's contrast (geometric × diffraction limit) follows the
+    /// wave-optical MTF of `lens-render mtf`.
+    #[test]
+    fn target_mtf_matches_wave_mtf() {
+        let freqs = [(10.0, false), (10.0, true), (20.0, false), (20.0, true), (40.0, false), (40.0, true)];
+        let mut worst: f64 = 0.0;
+        for f in [1.4, 2.8, 5.6] {
+            let mut lens = Lens::parse(include_str!("../lenses/summilux-50-asph.lens")).unwrap();
+            lens.set_aperture(f, 0, 0.0, 0.0).unwrap();
+            lens.sensor_z = lens.best_focus(Some(1e6)).unwrap();
+            for h in [0.0, 5.0, 10.0, 12.5, 15.0, 20.0, 21.0] {
+                let ours = target_mtf(&lens, 1e6, h, &freqs, 32).unwrap();
+                let (s, t) = crate::mtf::mtf_at(&lens, h, Some(1e6), &[10.0, 20.0, 40.0]).unwrap();
+                let wave = [s[0], t[0], s[1], t[1], s[2], t[2]];
+                println!("f/{f} {h:5.1} mm: target {:?} wave {:?}", round3(&ours), round3(&wave));
+                worst = ours.iter().zip(&wave).fold(worst, |w, (a, b)| w.max((a - b).abs()));
+            }
+        }
+        println!("worst {worst:.3}");
+    }
+
+    fn round3(v: &[f64]) -> Vec<f64> {
+        v.iter().map(|x| (x * 1000.0).round() / 1000.0).collect()
     }
 
     /// Departure, slopes and inflections of a known profile.

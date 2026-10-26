@@ -61,6 +61,43 @@ compares the chief ray with the paraxial image height. Field points sit at
 paraxially estimated angles and apertures are soft, so distortion and
 illumination come out within ~0.05 % and ~0.03 of `lens-render numbers`.
 
+## MTF targets
+
+```toml
+[mtf_target]
+reference = "summilux-50-asph-leica-mtf.json"   # as for `lens-render mtf --reference`
+fstops = [1.4, 2.8, 5.6]          # keys "f/1.4" … in the reference
+heights = [0, 5, 10, 15, 20, 21]  # mm, interpolated; default: the reference's
+weight = 10                       # µm of RMS per unit of contrast short
+margin = 0.01                     # contrast to exceed the reference by
+grid = 32                         # pupil rays per side
+```
+
+One-sided: at every f-number, height, frequency and azimuth (the
+reference's keys, e.g. `40S`, `40T`) where the design falls short of
+reference + margin, the shortfall × `weight` is a residual; where it is
+better, nothing. Each f-number gets its iris and the renderer's focus.
+The object sits at the job's `focus` (use e.g. 1000 m for infinity). The
+contrast is the geometric MTF of the white-light spot (CIE ȳ, 430–670 nm)
+times the diffraction limit at the working f-number; on the Summilux it
+stays within ~0.05 of the wave-optical MTF of `lens-render mtf` and tends
+to read low where the S or T focus lies far off the sensor (up to 0.09).
+Logs and the output header report how many targets are met and the
+largest shortfall.
+
+## Fitting a known geometry
+
+For reconstructions (a drawn design, unknown glasses):
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `vary_apertures` | true | false: clear apertures stay as drawn (and `vignetting` is ignored) |
+| `max_radius_change` | – | relative, from the start design at the job's focal length |
+| `radius_change_limits = [[row, change]]` | – | single rows |
+| `max_profile_change` | – | mm of sag from the start profile over the clear aperture, aspheric rows; 1 µm ≡ 10 µm of RMS |
+
+Thicknesses are held with `thickness_limits`.
+
 ## Aspheres
 
 ```toml
