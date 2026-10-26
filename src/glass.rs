@@ -6,8 +6,8 @@ use anyhow::{Result, bail};
 pub enum Glass {
     /// Sellmeier: n² = 1 + Σ Bᵢ λ² / (λ² − Cᵢ), λ in µm. A term with Cᵢ = 0 adds the constant Bᵢ.
     Sellmeier { name: String, b: &'static [f64], c: &'static [f64] },
-    /// Two-term Cauchy fitted to n_d and Abbe number V_d.
-    Cauchy { name: String, a: f64, b: f64 },
+    /// Cauchy n = a + b/λ² + c/λ⁴ (λ in µm) fitted to n_d, V_d and, with c, P_g,F.
+    Cauchy { name: String, a: f64, b: f64, c: f64 },
 }
 
 const fn sq(x: f64) -> f64 {
@@ -40,6 +40,11 @@ const CATALOG: &[(&str, &[f64], &[f64])] = &[
     ("N-LAK33B", &[1.42288601, 0.593661336, 1.1613526], &[0.00670283452, 0.021941621, 80.7407701]),
     ("S-LAH65V", &[1.81419034, 0.361376301, 1.32729484], &[0.00874935029, 0.0318352836, 91.3406898]),
     ("S-LAH55V", &[1.97025325, 0.30489414, 1.39214665], &[0.00991088134, 0.0383202295, 97.7785249]),
+    // Summilux reconstruction (same catalogues).
+    ("N-FK51A", &[0.971247817, 0.216901417, 0.904651666], &[0.00472301995, 0.0153575612, 168.68133]),
+    ("S-NBH51", &[1.71203689, 0.255989588, 1.81456998], &[0.0107724134, 0.0488593504, 136.359013]),
+    ("S-TIH13", &[1.62224674, 0.293844589, 1.99225164], &[0.0118368386, 0.0590208025, 171.959976]),
+    ("S-LAH59", &[1.51372967, 0.702462343, 1.33600982], &[0.00705246901, 0.0249488689, 100.085908]),
     ("N-PK52A", &[1.029607, 0.1880506, 0.736488165], &[0.00516800155, 0.0166658798, 138.964129]),
     ("N-KZFS4", &[1.35055424, 0.197575506, 1.09962992], &[0.0087628207, 0.0371767201, 90.3866994]),
     ("N-KZFS5", &[1.47460789, 0.193584488, 1.26589974], &[0.00986143816, 0.0445477583, 106.436258]),
@@ -86,6 +91,10 @@ impl Glass {
     pub fn parse(spec: &str) -> Result<Glass> {
         if let Some((nd, vd)) = spec.split_once('/') {
             let nd: f64 = nd.parse()?;
+            // nd/vd/ΔP_g,F: a model glass with a realistic secondary spectrum.
+            if let Some((vd, dp)) = vd.split_once('/') {
+                return Ok(Glass::model(spec, nd, vd.parse()?, dp.parse()?));
+            }
             let vd: f64 = vd.parse()?;
             return Ok(Glass::from_abbe(spec, nd, vd));
         }
@@ -106,7 +115,22 @@ impl Glass {
         let inv2 = |l: f64| 1.0 / (l * 1e-3).powi(2);
         let b = (nd - 1.0) / vd / (inv2(LAMBDA_F) - inv2(LAMBDA_C));
         let a = nd - b * inv2(LAMBDA_D);
-        Glass::Cauchy { name: name.to_string(), a, b }
+        Glass::Cauchy { name: name.to_string(), a, b, c: 0.0 }
+    }
+
+    /// Model glass: three-term Cauchy through n_d, V_d and a relative partial
+    /// dispersion P_g,F = 0.6438 − 0.001682 V_d + `dp` (Schott's normal line
+    /// plus the anomaly ΔP_g,F). `from_abbe` has P_g,F ≈ 0.54 whatever V_d.
+    pub fn model(name: &str, nd: f64, vd: f64, dp: f64) -> Glass {
+        let u = |l: f64| 1.0 / (l * 1e-3).powi(2);
+        let (ud, uf, uc, ug) = (u(LAMBDA_D), u(LAMBDA_F), u(LAMBDA_C), u(435.8343));
+        let dn = (nd - 1.0) / vd;
+        let p = 0.6438 - 0.001682 * vd + dp;
+        let (a11, a12, a21, a22) = (uf - uc, uf * uf - uc * uc, ug - uf, ug * ug - uf * uf);
+        let det = a11 * a22 - a12 * a21;
+        let b = (dn * a22 - a12 * p * dn) / det;
+        let c = (a11 * p * dn - a21 * dn) / det;
+        Glass::Cauchy { name: name.to_string(), a: nd - b * ud - c * ud * ud, b, c }
     }
 
     pub fn name(&self) -> &str {
@@ -120,7 +144,7 @@ impl Glass {
         let um2 = (l * 1e-3).powi(2);
         match self {
             Glass::Sellmeier { b, c, .. } => b.iter().zip(c.iter()).fold(1.0, |n2, (b, c)| n2 + b * um2 / (um2 - c)).sqrt(),
-            Glass::Cauchy { a, b, .. } => a + b / um2,
+            Glass::Cauchy { a, b, c, .. } => a + b / um2 + c / (um2 * um2),
         }
     }
 
@@ -159,6 +183,10 @@ mod tests {
             ("N-LAK33B", 1.75500, 52.30),
             ("S-LAH65V", 1.80400, 46.58),
             ("S-LAH55V", 1.83481, 42.73),
+            ("N-FK51A", 1.48656, 84.47),
+            ("S-NBH51", 1.74950, 35.33),
+            ("S-TIH13", 1.74077, 27.79),
+            ("S-LAH59", 1.81600, 46.62),
             ("N-PK52A", 1.49700, 81.61),
             ("N-KZFS4", 1.61336, 44.49),
             ("N-KZFS5", 1.65412, 39.70),
@@ -212,7 +240,7 @@ mod tests {
     #[test]
     fn anomalous_partial_dispersion() {
         // ΔP_g,F from the Schott datasheets, relative to the normal line P_g,F = 0.6438 − 0.001682 V_d.
-        for (name, dp) in [("N-PK52A", 0.0311), ("N-KZFS4", -0.0100)] {
+        for (name, dp) in [("N-PK52A", 0.0311), ("N-KZFS4", -0.0100), ("N-FK51A", 0.0342)] {
             let g = Glass::parse(name).unwrap();
             let p = (g.index(435.8343) - g.index(LAMBDA_F)) / (g.index(LAMBDA_F) - g.index(LAMBDA_C));
             let dp_calc = p - (0.6438 - 0.001682 * g.abbe());
@@ -225,5 +253,17 @@ mod tests {
         let g = Glass::parse("1.62/36.4").unwrap();
         assert!((g.nd() - 1.62).abs() < 1e-9);
         assert!((g.abbe() - 36.4).abs() < 1e-6);
+        // With ΔP_g,F: n_d, V_d and P_g,F as given.
+        for (spec, nd, vd, dp) in [("1.9185/37.1/0", 1.9185, 37.1, 0.0), ("1.48656/84.47/0.0342", 1.48656, 84.47, 0.0342)] {
+            let g = Glass::parse(spec).unwrap();
+            let p = (g.index(435.8343) - g.index(LAMBDA_F)) / (g.index(LAMBDA_F) - g.index(LAMBDA_C));
+            assert!((g.nd() - nd).abs() < 1e-9 && (g.abbe() - vd).abs() < 1e-6, "{spec}");
+            assert!((p - (0.6438 - 0.001682 * vd + dp)).abs() < 1e-9, "{spec} P_gF {p}");
+        }
+        // It follows a catalogue glass of the same n_d, V_d and ΔP_g,F across the visible.
+        let (cat, model) = (Glass::parse("N-FK51A").unwrap(), Glass::parse("1.48656/84.47/0.0342").unwrap());
+        for l in [420.0, 500.0, 600.0, 700.0] {
+            assert!((cat.index(l) - model.index(l)).abs() < 2e-4, "{l} nm: {} vs {}", cat.index(l), model.index(l));
+        }
     }
 }

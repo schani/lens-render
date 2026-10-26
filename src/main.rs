@@ -7,6 +7,7 @@ mod fieldpsf;
 mod footprint;
 mod ghosts;
 mod glass;
+mod glass_extra;
 mod gpu;
 mod lens;
 mod lensedit;
