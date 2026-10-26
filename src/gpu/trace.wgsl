@@ -1,7 +1,8 @@
 // Spectral ray tracing through a sequential lens. Prepended with common.wgsl.
 //
 // Lens blob (`lens`): 16 words per surface (z, curvature, semi-diameter,
-// is_stop, decenter x, decenter y, conic, is_aspheric, A4 … A18), then event paths of
+// is_stop, decenter x, decenter y, conic, is_aspheric, A4 … A18; on the stop
+// instead of A4–A8 the spectral annulus radius (< 0: none) and band), then event paths of
 // `path_stride` words each: [length, events...]; an event is
 // surface | forward << 8 | reflect << 9 (surface n_surf is the sensor). Path 0
 // traces forwards, path 1 backwards, then the ghost paths forwards, then backwards.
@@ -295,6 +296,13 @@ fn trace_clip(ray: ptr<function, Ray>, l: f32, path: u32, track: bool, soft: boo
                 if (*clip > 1.0 && !soft) { return -1.0; }
             } else if (!iris_contains(pl.x, pl.y)) {
                 return -1.0;
+            }
+            let ra = bitcast<f32>(lens[s.base]);
+            if (ra >= 0.0 && r2 > ra * ra) {
+                // Dichroic annulus: band pass with smooth edges (lens.rs SpectralStop::band).
+                let lo = bitcast<f32>(lens[s.base + 1u]);
+                let hi = bitcast<f32>(lens[s.base + 2u]);
+                t *= smoothstep(lo - 5.0, lo + 5.0, l) * (1.0 - smoothstep(hi - 5.0, hi + 5.0, l));
             }
             (*ray).o = p;
             continue;

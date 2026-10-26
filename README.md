@@ -26,7 +26,9 @@ Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
   `lenses/canon-24-70-f2.8l-ii.md`.
 - `explainer/`: eleven 50 mm designs from one lens to the double Gauss,
   made with `lens-render optimize` (damped least squares on real-ray spot
-  sizes); numbers and notes in `lenses/explainer/README.md`.
+  sizes); numbers and notes in `lenses/explainer/README.md`. Job file
+  options (aspheres, MTF merit, glass choice, global search):
+  `docs/optimiser.md`.
 
 ## What is simulated
 
@@ -277,7 +279,14 @@ focal length (the parabola through three positions).
 `@iris <blades> [curvature]` describes the iris (default 6 straight blades), `@coating none|single|multi`
 the anti-reflection coating (default single). Materials are `air`, a
 catalogue glass (N-BK7, N-SK16, F2, N-SF2, N-SF5, N-SF11, N-BAK1, N-LAK9,
-FUSED-SILICA) or `nd/vd`, e.g. `1.62041/60.32`. The last thickness is the
+N-LASF9, N-LASF31A, N-LASF46B, S-LAH58, S-LAH79, N-PK52A, N-KZFS4, N-KZFS5,
+N-KZFS8), a crystal or liquid (FUSED-SILICA, CAF2, DIAMOND, CUBIC-ZIRCONIA,
+ZNS, WATER; sources in `src/glass.rs`) or `nd/vd`, e.g. `1.62041/60.32`.
+The stop row may carry an experimental dichroic annulus,
+`annulus=<fraction> pass=<lo>-<hi>`: inside the fraction of the stop's
+semi-diameter all light passes, outside only `lo`–`hi` nm (10 nm smooth
+edges), on the CPU and the GPU (also in wave optics; the default
+diffraction kernels ignore it). The last thickness is the
 nominal distance to the image plane; focusing moves the sensor.
 
 ## The Cooke triplet

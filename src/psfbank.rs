@@ -236,7 +236,10 @@ mod tests {
         lux.prepare(1.4, 0, 0.0, 0.0, Some(2000.0), 0.0).unwrap();
         let mut tri = Lens::parse(include_str!("../lenses/cooke-triplet.lens")).unwrap();
         tri.prepare(5.6, 6, 0.0, 0.0, Some(1500.0), 0.0).unwrap();
-        for (lens, focus) in [(lux, 2000.0), (tri, 1500.0)] {
+        // A spectral annulus in the stop: the pupil mask depends on wavelength.
+        let mut dichroic = Lens::parse(&include_str!("../lenses/cooke-triplet.lens").replace("air         5.57", "air         5.57 annulus=0.4 pass=480-600")).unwrap();
+        dichroic.prepare(5.6, 6, 0.0, 0.0, Some(1500.0), 0.0).unwrap();
+        for (lens, focus) in [(lux, 2000.0), (tri, 1500.0), (dichroic, 1500.0)] {
             let pitch = 0.03;
             let cpu = PsfBank::build(&lens, Some(focus), 4, pitch, 21.63, None, &|_| {});
             let gpu = PsfBank::build(&lens, Some(focus), 4, pitch, 21.63, Some(&wave), &|_| {});

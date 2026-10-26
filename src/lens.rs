@@ -56,7 +56,7 @@ impl Surface {
     }
 
     /// d(sag)/d(r²).
-    fn dsag_du(&self, u: f64) -> f64 {
+    pub fn dsag_du(&self, u: f64) -> f64 {
         let c = self.curvature();
         let q = (1.0 - (1.0 + self.conic) * c * c * u).max(1e-12);
         let mut d = c / (2.0 * q.sqrt());
@@ -308,6 +308,52 @@ pub struct Lens {
     pub backward_path: Vec<Event>,
     pub floating: Vec<FloatingGap>,
     pub zoom: Option<Zoom>,
+    /// Dichroic annulus at the stop (experimental).
+    pub spectral_stop: Option<SpectralStop>,
+}
+
+/// A dichroic filter in the stop: inside `inner` × the stop's semi-diameter
+/// all wavelengths pass; in the annulus outside it only the band `lo`–`hi`
+/// nm, with smooth edges `SpectralStop::EDGE` nm wide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectralStop {
+    pub inner: f64,
+    pub lo: f64,
+    pub hi: f64,
+}
+
+impl SpectralStop {
+    pub const EDGE: f64 = 10.0;
+
+    /// Transmission of the annulus at wavelength `l` nm.
+    pub fn band(&self, l: f64) -> f64 {
+        // Cubic smooth step over ±EDGE/2, as WGSL's smoothstep.
+        let step = |d: f64| {
+            let t = (d / Self::EDGE + 0.5).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        step(l - self.lo) * step(self.hi - l)
+    }
+
+    /// Transmission at squared radius `r2` on a stop of semi-diameter `sd`.
+    #[inline]
+    pub fn transmission(&self, r2: f64, sd: f64, l: f64) -> f64 {
+        let a = self.inner * sd;
+        if r2 <= a * a { 1.0 } else { self.band(l) }
+    }
+
+    /// Luminous (CIE ȳ, equal-energy light) transmission of an evenly lit
+    /// iris whose radius is `open` × the stop's semi-diameter.
+    pub fn luminous(&self, open: f64) -> f64 {
+        let a2 = (self.inner / open).min(1.0).powi(2);
+        let (mut num, mut den) = (0.0, 0.0);
+        for l in (380..=780).step_by(2) {
+            let y = crate::spectrum::cie_xyz(l as f64)[1];
+            num += y * (a2 + (1.0 - a2) * self.band(l as f64));
+            den += y;
+        }
+        num / den
+    }
 }
 
 pub struct Paraxial {
@@ -329,6 +375,7 @@ impl Lens {
         let (mut zoom_focal, mut zoom_gaps, mut zoom_fnumber) = (None, Vec::new(), None);
         let (mut blades, mut blade_curvature) = (6, 0.0);
         let mut coating = Coating::SINGLE;
+        let mut spectral_stop = None;
         for (lineno, line) in text.lines().enumerate() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("@name") {
@@ -398,14 +445,22 @@ impl Lens {
             if is_stop && material.is_some() {
                 bail!("line {}: the stop must be in air", lineno + 1);
             }
-            // Optional aspheric terms: k=<conic> a4=… a6=… (up to a20).
+            // Optional aspheric terms: k=<conic> a4=… a6=… (up to a20); on
+            // the stop a dichroic annulus: annulus=<fraction> pass=<lo>-<hi>.
             let mut conic = 0.0;
             let mut aspheric = Vec::new();
+            let (mut annulus, mut pass) = (None, None);
             for kv in &cols[4..] {
                 let Some((key, val)) = kv.split_once('=') else { bail!("line {}: expected key=value, got {kv}", lineno + 1) };
+                if key.eq_ignore_ascii_case("pass") {
+                    let (lo, hi) = val.split_once('-').with_context(|| format!("line {}: pass=<lo>-<hi> in nm", lineno + 1))?;
+                    pass = Some((lo.parse::<f64>().with_context(ctx)?, hi.parse::<f64>().with_context(ctx)?));
+                    continue;
+                }
                 let val: f64 = val.parse().with_context(ctx)?;
                 match key.to_ascii_lowercase().as_str() {
                     "k" => conic = val,
+                    "annulus" => annulus = Some(val),
                     a if a.starts_with('a') => {
                         let order: usize = a[1..].parse().with_context(ctx)?;
                         if order < 4 || order % 2 == 1 || order > 20 {
@@ -422,6 +477,11 @@ impl Lens {
             }
             if is_stop && (conic != 0.0 || !aspheric.is_empty()) {
                 bail!("line {}: the stop is flat", lineno + 1);
+            }
+            match (annulus, pass) {
+                (None, None) => {}
+                (Some(inner), Some((lo, hi))) if is_stop && (0.0..=1.0).contains(&inner) && lo < hi => spectral_stop = Some(SpectralStop { inner, lo, hi }),
+                _ => bail!("line {}: annulus=<0..1> pass=<lo>-<hi> go together, on the stop", lineno + 1),
             }
             surfaces.push(Surface { radius, thickness, material, semi_diameter, is_stop, z: 0.0, decenter: (0.0, 0.0), conic, aspheric });
         }
@@ -474,6 +534,7 @@ impl Lens {
             backward_path,
             floating,
             zoom,
+            spectral_stop,
         };
         if let Some(f) = lens.zoom.as_ref().map(|z| z.at) {
             lens.set_zoom(f);
@@ -582,6 +643,9 @@ impl Lens {
             }
             for (i, a) in s.aspheric.iter().enumerate().filter(|(_, a)| **a != 0.0) {
                 t += &format!(" a{}={a}", 4 + 2 * i);
+            }
+            if let (true, Some(f)) = (s.is_stop, &self.spectral_stop) {
+                t += &format!(" annulus={} pass={}-{}", f.inner, f.lo, f.hi);
             }
             t += "\n";
         }
@@ -922,6 +986,9 @@ impl Lens {
                 if clip && (!self.iris.contains(px, py) || r2 > s.semi_diameter * s.semi_diameter) {
                     return None;
                 }
+                if let Some(f) = &self.spectral_stop {
+                    throughput *= f.transmission(r2, s.semi_diameter, l);
+                }
                 ray.o = p;
                 continue;
             }
@@ -952,6 +1019,18 @@ impl Lens {
             }
         }
         Some((ray, throughput, opl))
+    }
+
+    /// Transmission of the spectral stop for `ray` entering the lens
+    /// (apertures ignored); 1 without one.
+    pub fn spectral_weight(&self, ray: Ray, l: f64, m: &Media) -> f64 {
+        let Some(f) = &self.spectral_stop else { return 1.0 };
+        let k = self.stop_index;
+        let Some((r, _, _)) = self.trace_path_opl(ray, l, m, &self.forward_path[..k], false) else { return 0.0 };
+        let s = &self.surfaces[k];
+        let t = (s.z - r.o.z) / r.d.z;
+        let (x, y) = (r.o.x + r.d.x * t - s.decenter.0, r.o.y + r.d.y * t - s.decenter.1);
+        f.transmission(x * x + y * y, s.semi_diameter, l)
     }
 
     fn on_sensor(&self, x: f64, y: f64) -> bool {
@@ -1208,6 +1287,30 @@ mod tests {
     }
 
     const ZOOM: &str = include_str!("../lenses/canon-24-70-f2.8l-ii.lens");
+
+    /// The spectral stop parses, round-trips and weights rays crossing its annulus.
+    #[test]
+    fn spectral_stop() {
+        let text = TRIPLET.replace("air         5.57", "air         5.57  annulus=0.5 pass=480-600");
+        let a = Lens::parse(&text).unwrap();
+        let f = a.spectral_stop.unwrap();
+        assert_eq!(f, SpectralStop { inner: 0.5, lo: 480.0, hi: 600.0 });
+        assert_eq!(Lens::parse(&a.to_text()).unwrap().spectral_stop, Some(f));
+        assert!(Lens::parse(TRIPLET).unwrap().spectral_stop.is_none());
+        for bad in ["annulus=0.5", "pass=480-600", "annulus=1.5 pass=480-600", "annulus=0.5 pass=600-480"] {
+            assert!(Lens::parse(&TRIPLET.replace("air         5.57", &format!("air 5.57 {bad}"))).is_err(), "{bad}");
+        }
+        assert!(Lens::parse(&TRIPLET.replace("N-SK16      8.2", "N-SK16 8.2 annulus=0.5 pass=480-600")).is_err());
+        assert_eq!((f.band(540.0), f.band(470.0), f.band(480.0), f.band(610.0)), (1.0, 0.0, 0.5, 0.0));
+        // A ray through the annulus is filtered out of band, one near the axis is not.
+        let m = a.media(430.0);
+        let outer = Ray { o: Vec3::new(0.0, 5.0, -10.0), d: Vec3::new(0.0, 0.0, 1.0) };
+        let inner = Ray { o: Vec3::new(0.0, 1.0, -10.0), d: Vec3::new(0.0, 0.0, 1.0) };
+        let plain = Lens::parse(TRIPLET).unwrap();
+        assert_eq!(a.trace_forward(outer, 430.0, &m).unwrap().1, 0.0);
+        assert_eq!(a.trace_forward(inner, 430.0, &m).unwrap().1, plain.trace_forward(inner, 430.0, &m).unwrap().1);
+        assert_eq!((a.spectral_weight(outer, 430.0, &m), a.spectral_weight(outer, 540.0, &a.media(540.0)), a.spectral_weight(inner, 430.0, &m)), (0.0, 1.0, 1.0));
+    }
 
     /// The zoom at the patent's positions (US 8,736,971 example 3): focal
     /// length, back focus and F-number; sharp on axis and plausible at the

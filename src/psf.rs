@@ -471,7 +471,8 @@ impl Wavefront {
         let du = side / n as f64;
         let trace = |i: f64, j: f64| {
             let q = Vec3::new(cx - side / 2.0 + (i + 0.5) * du, cy - side / 2.0 + (j + 0.5) * du, q_c.z);
-            trace_to_sphere(lens, src, q, l, &m, &rf, true)
+            // Light a spectral stop blocks counts as blocked (as on the GPU).
+            trace_to_sphere(lens, src, q, l, &m, &rf, true).filter(|r| r.t > 0.0)
         };
         // Rays are traced every `step` samples (plus a border node for the
         // stencil). The wavefront is smooth, so samples whose whole 4 × 4
@@ -508,9 +509,11 @@ impl Wavefront {
                         }
                     }
                 }
+                // A spectral stop's annulus edge is a step in amplitude: trace near it.
+                let (lo, hi) = st[0].iter().flatten().fold((f64::INFINITY, 0.0f64), |(a, b), &v| (a.min(v), b.max(v)));
                 match open {
                     0 => return None,
-                    16 => {}
+                    16 if lens.spectral_stop.is_none() || lo > 0.97 * hi => {}
                     _ => return trace(i as f64, j as f64).as_ref().map(sample),
                 }
                 let (fx, fy) = ((i % step) as f64 / step as f64, (j % step) as f64 / step as f64);
@@ -799,7 +802,13 @@ mod tests {
         lux.sensor_z = lux.best_focus(None).unwrap();
         let mut poly = triplet(8.0);
         poly.set_aperture(8.0, 6, 0.0, 0.0).unwrap();
+        // A spectral annulus: out of band only the inner disc passes.
+        let mut dichroic = Lens::parse(&include_str!("../lenses/cooke-triplet.lens").replace("air         5.57", "air         5.57 annulus=0.6 pass=480-600")).unwrap();
+        dichroic.set_aperture(3.5, 0, 0.0, 0.0).unwrap();
+        dichroic.sensor_z = dichroic.best_focus(Some(2000.0)).unwrap();
         let cases = [
+            (dichroic.clone(), 0.0, Some(2000.0), 630.0),
+            (dichroic, 12.0, Some(2000.0), 530.0),
             (triplet(3.5), 0.0, None, 550.0),
             (triplet(3.5), 14.0, Some(1500.0), 450.0),
             (poly, 10.0, Some(700.0), 650.0),

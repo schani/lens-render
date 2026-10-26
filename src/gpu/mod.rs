@@ -316,6 +316,13 @@ fn surface_words(lens: &Lens) -> Result<Vec<u32>> {
         for (k, v) in srf.aspheric.iter().enumerate() {
             a[k] = (*v as f32).to_bits();
         }
+        if srf.is_stop {
+            // The stop's spare words: spectral annulus radius (< 0: none), band.
+            let f = lens.spectral_stop.map_or([-1.0, 0.0, 0.0], |f| [f.inner * srf.semi_diameter, f.lo, f.hi]);
+            for (k, v) in f.into_iter().enumerate() {
+                a[k] = (v as f32).to_bits();
+            }
+        }
         words.extend([
             (srf.z as f32).to_bits(),
             (c as f32).to_bits(),
@@ -1607,6 +1614,47 @@ mod tests {
         println!("asphere: total gpu {tg} cpu {tc}, block diff {d}");
         assert!((tg - tc).abs() / tc < 0.01);
         assert!(d < 0.03);
+    }
+
+    /// A spectral (dichroic) annulus in the stop filters the same on the GPU
+    /// as on the CPU, per wavelength bin, scene and lights with ghosts; out
+    /// of band only the inner disc passes.
+    #[test]
+    fn spectral_stop_matches_cpu() {
+        let Ok(ctx) = GpuContext::headless() else { return };
+        let text = include_str!("../../lenses/cooke-triplet.lens").replace("  stop        3.55041     air         5.57", "  stop        3.55041     air         5.57  annulus=0.5 pass=480-600");
+        let mut lens = Lens::parse(&text).unwrap();
+        lens.set_aperture(3.5, 6, 0.0, 0.0).unwrap();
+        lens.sensor_z = lens.best_focus(Some(2000.0)).unwrap();
+        let light = Light { center: Vec3::new(600.0, -300.0, -4000.0), radius: 30.0, spectrum: LightSpectrum::Rgb { rgb: [1.0; 3], scale: 1e-3 } };
+        let scene = Scene { rects: vec![chart(Vec3::new(0.0, 0.0, -2000.0), 1000.0)], lights: vec![light], background: [0.05, 0.1, 0.2] };
+        let s = settings(120, 80, 8, true);
+        let mut g = GpuRenderer::new(ctx);
+        g.set_scene(&scene);
+        let mut film = |lens: &Lens| {
+            g.configure(lens, &s, None).unwrap();
+            for _ in 0..256 {
+                g.render_frame();
+            }
+            g.resolve(false).unwrap();
+            g.read_film().unwrap()
+        };
+        let gpu = film(&lens);
+        let open = film(&Lens { spectral_stop: None, ..lens.clone() });
+        let cs = ColorSystem::new();
+        let r = crate::render::Renderer::new(&lens, &scene, &cs, 120, 80, 36.0, 8, 1.0);
+        let mut cpu = Film::new(120, 80, 8);
+        r.render_surfaces(&mut cpu, 2048, true, false);
+        r.render_lights(&mut cpu, 4_000_000, 256, 0.0, false);
+        let bin = |f: &Film, k: usize| f.data.iter().skip(k).step_by(f.bins).map(|v| *v as f64).sum::<f64>();
+        for k in 0..8 {
+            let (g, c, o) = (bin(&gpu, k), bin(&cpu, k), bin(&open, k));
+            println!("bin {k}: gpu {g:.4} cpu {c:.4} open {o:.4} ({:.3})", g / o);
+            assert!((g - c).abs() / c < 0.015, "bin {k}");
+        }
+        // 380–430 nm: out of band; 530–580 nm: in band.
+        assert!(bin(&gpu, 0) < 0.4 * bin(&open, 0) && bin(&gpu, 3) > 0.97 * bin(&open, 3));
+        assert!(block_diff(&cpu, &gpu) < 0.03);
     }
 
     /// Imaging through the wave-optical PSF bank conserves energy and agrees

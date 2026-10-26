@@ -128,13 +128,17 @@ pub struct Scoreboard {
 const E_LINE: f64 = 546.07;
 
 /// Exit rays at 546 nm of the corner point through the entrance pupil
-/// (1.6 × its paraxial radius, apertures clipping): the tangential fan
-/// (y), the sagittal fan (x), or a full grid; and the chief ray.
+/// (1.6 × its paraxial radius, apertures clipping; a spectral stop passing
+/// at least half): the tangential fan (y), the sagittal fan (x), or a full
+/// grid; and the chief ray.
 fn corner_rays(lens: &Lens, src: &Source, fan: Option<bool>) -> Option<(Vec<Ray>, Ray)> {
     let q = chief_aim(lens, src, E_LINE)?;
     let r = 1.6 * lens.iris.max_radius / lens.paraxial_data(LAMBDA_D).entrance_pupil_mag;
     let m = lens.media(E_LINE);
-    let trace = |x: f64, y: f64| lens.trace_forward(src.ray_through(q + Vec3::new(x * r, y * r, 0.0)).0, E_LINE, &m).map(|o| o.0);
+    let trace = |x: f64, y: f64| {
+        let ray = src.ray_through(q + Vec3::new(x * r, y * r, 0.0)).0;
+        lens.trace_forward(ray, E_LINE, &m).filter(|_| lens.spectral_weight(ray, E_LINE, &m) >= 0.5).map(|o| o.0)
+    };
     let n = 201;
     let u = |k: usize| 2.0 * k as f64 / (n - 1) as f64 - 1.0;
     let rays: Vec<Ray> = match fan {
@@ -214,7 +218,18 @@ pub fn scoreboard(lens: &Lens, dist: f64) -> Scoreboard {
         (Some(k), Some(th)) => (HALF_DIAG / (k * th.tan()) - 1.0) * 100.0,
         _ => f64::NAN,
     };
-    let axial = blur_um(lens.paraxial_focus(Some(dist), LAMBDA_C) - lens.paraxial_focus(Some(dist), LAMBDA_F)) / 2.0;
+    let mut axial = blur_um(lens.paraxial_focus(Some(dist), LAMBDA_C) - lens.paraxial_focus(Some(dist), LAMBDA_F)) / 2.0;
+    if let Some(f) = &lens.spectral_stop {
+        // C and F pass the annulus only in part: scale by their RMS pupil
+        // radius relative to the open pupil's, √(2⟨ρ²⟩).
+        let a2 = (f.inner * lens.surfaces[lens.stop_index].semi_diameter / lens.iris.radius).min(1.0).powi(2);
+        let k = |l: f64| {
+            let b = f.band(l);
+            let den = a2 + b * (1.0 - a2);
+            if den > 0.0 { ((a2 * a2 + b * (1.0 - a2 * a2)) / den).sqrt() } else { 0.0 }
+        };
+        axial *= 0.5 * (k(LAMBDA_C) + k(LAMBDA_F));
+    }
     let lateral = src.as_ref().map_or(f64::NAN, |src| {
         let y = |l: f64| -> Option<f64> {
             let m = lens.media(l);
@@ -367,6 +382,21 @@ mod tests {
         let open = scoreboard(&setup(include_str!("../lenses/explainer/02-best-form.lens"), 4.0), 2500.0);
         assert!(stopped.bars[0] < open.bars[0] / 4.0 && stopped.blur[0] < 10.0, "{:?} {:?}", stopped.bars, stopped.blur);
         assert!((stopped.bars[4] - open.bars[4]).abs() < 0.05);
+    }
+
+    /// A green-pass annulus in the singlet's stop: the white-light centre
+    /// blur and the axial colour bar shrink, spherical aberration at 546 nm stays.
+    #[test]
+    fn spectral_stop_shrinks_axial_colour() {
+        let text = include_str!("../lenses/explainer/01-singlet.lens");
+        let plain = scoreboard(&setup(text, 4.0), 2500.0);
+        let annulus = setup(&text.replace("0.5000      air            6.252", "0.5000      air            6.252  annulus=0.4 pass=500-600"), 4.0);
+        assert!(annulus.spectral_stop.is_some());
+        let dichroic = scoreboard(&annulus, 2500.0);
+        println!("centre blur {:.1} → {:.1} µm, axial colour {:.1} → {:.1} µm, spherical {:.1} → {:.1} µm", plain.blur[0], dichroic.blur[0], plain.bars[5], dichroic.bars[5], plain.bars[0], dichroic.bars[0]);
+        assert!(dichroic.blur[0] < 0.8 * plain.blur[0]);
+        assert!(dichroic.bars[5] < 0.5 * plain.bars[5]);
+        assert!((dichroic.bars[0] / plain.bars[0] - 1.0).abs() < 0.05);
     }
 
     /// The bars agree with the measured blur: no off-axis bar far above the
