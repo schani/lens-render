@@ -1,0 +1,67 @@
+name = "Garnet triplet 50mm f/2"
+header = """
+Garnet triplet, 50 mm f/2: aspheric LuAG front element, polystyrene
+negative behind the stop, YAG rear element (Cooke triplet, stop between
+elements 1 and 2). All surfaces aspheric.
+Why: LuAG and YAG (cubic garnets, also as transparent ceramics) lie above
+the glass map: n 1.83-1.84 at V 52-58. With a low-index flint (polystyrene,
+n 1.59) the Petzval sum stays low. Material set X (catalogue without
+diamond). Polystyrene data: fit to Zhang et al. 2020; its partial
+dispersion is uncertain (README).
+Bar: 50 mm, 36 x 24, f/2, <= 3 elements, white-light RMS <= ~8 um at 0, 0.7, 1.0
+field, distortion <= 1 %, corner illumination >= 0.35, back focus >= 20 mm.
+Design: lens-render optimize (global search, equal budget for every material
+set): spherical screening of all glass combinations of each topology, then
+aspheric refinement of the best combinations, then 24 starts with one basin
+hop each (this job). Merit: RMS spot at 0, 0.3, 0.5, 0.7, 0.85, 1.0 field,
+440/486/546/656 nm (0.5:1:2:1), object at infinity (1000 m); glass aspheres
+departure <= 0.5 mm. Experiment: lenses/novel/README.md.
+Numbers (lens-render numbers, f/2, infinity): RMS 5.0 / 10.0 / 9.0 um at
+0 / 0.7 / 1.0 field (flat 440-660 nm: 5.8 / 9.5 / 10.3), distortion -0.29 %,
+corner illumination 0.39, length 75.3 mm, back focus 42.1 mm. At 2.5 m:
+5.9 / 10.7 / 12.3 um. Misses the 8 um bar at 0.7 and 1.0 field."""
+output = "garnet-triplet-f2.lens"
+fstop = 2.0
+focus = 1000
+efl = 50
+fields = [0.0, 0.3, 0.5, 0.7, 0.85, 1.0]
+field_weights = [1, 1, 1, 1, 1, 1]
+wavelengths = [[440, 0.5], [486.13, 1], [546.07, 2], [656.27, 1]]
+vignetting = 0.5
+max_distortion = 1.0
+min_corner_illumination = 0.36
+max_length = 90
+min_back_focus = 20
+max_departure = 0.5
+max_departure_slope = 0.1
+max_inflections = 2
+iterations = 150
+
+curvatures = [1, 2, 4, 5, 6, 7]
+thicknesses = [1, 2, 3, 4, 5, 6]
+conics = [1, 2, 4, 5, 6, 7]
+aspheres = [1, 2, 4, 5, 6, 7]
+asphere_orders = [4, 6, 8, 10]
+start = """
+  36.8486     11.0537     LUAG           12.530 k=-0.084750 a4=2.502221e-6 a6=-2.383659e-8 a8=1.465202e-10 a10=-6.672171e-13
+  75.4169     0.6580      air            11.070 k=16.268532 a4=-8.718310e-6 a6=-8.642931e-8 a8=-4.429887e-11 a10=-1.508862e-12
+  stop        8.5093      air            10.682
+  -16.7322    1.5000      POLYSTYRENE    10.310 k=0.048677 a4=-2.066043e-5 a6=-1.588056e-7 a8=8.526136e-11 a10=2.945124e-12
+  34.9921     0.6368      air            12.360 k=-16.561357 a4=-2.579504e-5 a6=1.393529e-8 a8=-4.464255e-10 a10=6.638975e-12
+  41.8126     11.8145     YAG            12.000 k=-25.299114 a4=-1.064860e-5 a6=-2.792281e-8 a8=-6.511631e-10 a10=4.656855e-12
+  -22.9980    38.0000     air            12.650 k=0.104973 a4=2.758865e-6 a6=1.319075e-8 a8=-5.908906e-11 a10=-1.163716e-13
+"""
+
+[[material_limits]]
+glass = "DIAMOND"
+max_thickness = 6
+max_departure = 0.05
+
+[global]
+restarts = 24
+keep = 1
+seed = 3
+perturb = 0.15
+asphere_perturb = 0.01
+hops = 1
+

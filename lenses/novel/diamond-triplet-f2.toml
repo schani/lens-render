@@ -1,0 +1,67 @@
+name = "Diamond triplet 50mm f/2"
+header = """
+Diamond triplet, 50 mm f/2: spherical diamond front element, aspheric
+N-SF11 negative behind the stop, aspheric LuAG rear element (Cooke triplet
+with the stop between elements 1 and 2).
+Why: diamond (n 2.42, V 55) as the positive crown: low Petzval sum and weak
+curves for its power. Material set D (whole catalogue incl. diamond); the
+diamond's surfaces are kept spherical (it is hard to figure).
+Diamond: 24.6 mm across, 4.0 mm thick; single-crystal CVD plates this size are
+not available for optics (see README).
+Bar: 50 mm, 36 x 24, f/2, <= 3 elements, white-light RMS <= ~8 um at 0, 0.7, 1.0
+field, distortion <= 1 %, corner illumination >= 0.35, back focus >= 20 mm.
+Design: lens-render optimize (global search, equal budget for every material
+set): spherical screening of all glass combinations of each topology, then
+aspheric refinement of the best combinations, then 24 starts with one basin
+hop each (this job). Merit: RMS spot at 0, 0.3, 0.5, 0.7, 0.85, 1.0 field,
+440/486/546/656 nm (0.5:1:2:1), object at infinity (1000 m); glass aspheres
+departure <= 0.5 mm. Experiment: lenses/novel/README.md.
+Numbers (lens-render numbers, f/2, infinity): RMS 6.7 / 9.1 / 9.9 um at
+0 / 0.7 / 1.0 field (flat 440-660 nm: 6.5 / 8.8 / 10.9), distortion +1.00 %,
+corner illumination 0.36, length 61.3 mm, back focus 20.7 mm. At 2.5 m:
+7.7 / 9.8 / 12.3 um. Misses the 8 um bar at 0.7 and 1.0 field."""
+output = "diamond-triplet-f2.lens"
+fstop = 2.0
+focus = 1000
+efl = 50
+fields = [0.0, 0.3, 0.5, 0.7, 0.85, 1.0]
+field_weights = [1, 1, 1, 1, 1, 1]
+wavelengths = [[440, 0.5], [486.13, 1], [546.07, 2], [656.27, 1]]
+vignetting = 0.5
+max_distortion = 1.0
+min_corner_illumination = 0.36
+max_length = 90
+min_back_focus = 20
+max_departure = 0.5
+max_departure_slope = 0.1
+max_inflections = 2
+iterations = 150
+
+curvatures = [1, 2, 4, 5, 6, 7]
+thicknesses = [1, 2, 3, 4, 5, 6]
+conics = [4, 5, 6, 7]
+aspheres = [4, 5, 6, 7]
+asphere_orders = [4, 6, 8, 10]
+start = """
+  23.1900     4.4246      DIAMOND        12.530
+  40.6752     1.5544      air            11.510
+  stop        1.7105      air            10.517
+  127.5577    5.7092      N-SF11         10.840 k=18.785438 a4=3.607343e-5 a6=-1.039177e-7 a8=-5.620605e-11 a10=1.216687e-12
+  21.8658     7.3897      air            7.650 k=2.451750 a4=6.026028e-5 a6=-5.967513e-8 a8=-1.375860e-9 a10=9.966715e-12
+  101.4693    17.4673     LUAG           8.790 k=26.159803 a4=8.508039e-6 a6=1.908124e-8 a8=1.158764e-10 a10=9.080002e-14
+  -87.0088    38.0000     air            14.270 k=-3.209597 a4=2.181385e-6 a6=-7.963510e-9 a8=-7.911156e-12 a10=2.721228e-13
+"""
+
+[[material_limits]]
+glass = "DIAMOND"
+max_thickness = 6
+max_departure = 0.05
+
+[global]
+restarts = 24
+keep = 1
+seed = 3
+perturb = 0.15
+asphere_perturb = 0.01
+hops = 1
+

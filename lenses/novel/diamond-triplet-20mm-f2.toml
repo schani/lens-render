@@ -1,0 +1,66 @@
+name = "Diamond triplet 50mm f/2, diamond <= 20 mm"
+header = """
+Diamond triplet with a 20 mm diamond, 50 mm f/2: aspheric LuAG front
+element, N-LASF46B negative, stop, diamond rear element (clear diameter
+limited to 20 mm, the size single-crystal CVD diamond plates come in).
+Why: the realistic diamond. The diamond sits right behind the stop, where
+the beam is narrowest.
+Bar: 50 mm, 36 x 24, f/2, <= 3 elements, white-light RMS <= ~8 um at 0, 0.7, 1.0
+field, distortion <= 1 %, corner illumination >= 0.35, back focus >= 20 mm.
+Design: lens-render optimize (global search, equal budget for every material
+set): spherical screening of all glass combinations of each topology, then
+aspheric refinement of the best combinations, then 24 starts with one basin
+hop each (this job). Merit: RMS spot at 0, 0.3, 0.5, 0.7, 0.85, 1.0 field,
+440/486/546/656 nm (0.5:1:2:1), object at infinity (1000 m); glass aspheres
+departure <= 0.5 mm. Experiment: lenses/novel/README.md.
+Numbers (lens-render numbers, f/2, infinity): RMS 10.8 / 15.1 / 17.6 um at
+0 / 0.7 / 1.0 field (flat 440-660 nm: 11.7 / 14.6 / 19.1), distortion -0.73 %,
+corner illumination 0.35, length 72.6 mm, back focus 39.5 mm; diamond
+19.7 mm across, 5.8 mm thick. At 2.5 m: 12.0 / 16.4 / 14.8 um. Worse than the
+glass triplet."""
+output = "diamond-triplet-20mm-f2.lens"
+fstop = 2.0
+focus = 1000
+efl = 50
+fields = [0.0, 0.3, 0.5, 0.7, 0.85, 1.0]
+field_weights = [1, 1, 1, 1, 1, 1]
+wavelengths = [[440, 0.5], [486.13, 1], [546.07, 2], [656.27, 1]]
+vignetting = 0.5
+max_distortion = 1.0
+min_corner_illumination = 0.36
+max_length = 90
+min_back_focus = 20
+max_departure = 0.5
+max_departure_slope = 0.1
+max_inflections = 2
+iterations = 150
+
+curvatures = [1, 2, 3, 4, 6, 7]
+thicknesses = [1, 2, 3, 4, 5, 6]
+conics = [1, 2, 3, 4, 6, 7]
+aspheres = [1, 2, 3, 4, 6, 7]
+asphere_orders = [4, 6, 8, 10]
+start = """
+  35.2111     7.6573      LUAG           15.870 k=0.046639 a4=7.011971e-7 a6=-3.219110e-9 a8=2.422332e-11 a10=1.703758e-14
+  173.1089    7.2100      air            12.620 k=66.299898 a4=-4.195963e-7 a6=-5.487326e-9 a8=5.485831e-11 a10=-8.337910e-14
+  -44.4743    7.7635      N-LASF46B      11.000 k=-1.616722 a4=-1.499548e-6 a6=-3.089757e-8 a8=1.520815e-10 a10=-9.185783e-13
+  46.9226     2.4503      air            10.000 k=2.215959 a4=3.108514e-6 a6=-2.678003e-8 a8=-4.564637e-10 a10=2.200932e-13
+  stop        0.9683      air            9.619
+  114.6265    6.0000      DIAMOND        9.820 k=77.854922 a4=2.867314e-6 a6=9.780110e-10 a8=1.220029e-11 a10=-2.194859e-12
+  -53.5354    38.0000     air            9.710 k=-1.670971 a4=5.135828e-6 a6=3.180648e-8 a8=8.983051e-11 a10=-7.771863e-13
+"""
+
+[[material_limits]]
+glass = "DIAMOND"
+max_thickness = 6
+max_semi_diameter = 9.9
+max_departure = 0.05
+
+[global]
+restarts = 24
+keep = 1
+seed = 1
+perturb = 0.15
+asphere_perturb = 0.01
+hops = 1
+

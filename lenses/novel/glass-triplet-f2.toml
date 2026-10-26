@@ -1,0 +1,64 @@
+name = "Glass triplet 50mm f/2"
+header = """
+Glass triplet, 50 mm f/2: aspheric S-LAH65V front element, N-SF11
+negative behind the stop, S-LAH55V rear element (Cooke triplet, stop
+between elements 1 and 2). All surfaces aspheric.
+Why: the reference. Material set G (catalogue glasses and CaF2 only), same
+search and budget as the diamond and garnet designs.
+Bar: 50 mm, 36 x 24, f/2, <= 3 elements, white-light RMS <= ~8 um at 0, 0.7, 1.0
+field, distortion <= 1 %, corner illumination >= 0.35, back focus >= 20 mm.
+Design: lens-render optimize (global search, equal budget for every material
+set): spherical screening of all glass combinations of each topology, then
+aspheric refinement of the best combinations, then 24 starts with one basin
+hop each (this job). Merit: RMS spot at 0, 0.3, 0.5, 0.7, 0.85, 1.0 field,
+440/486/546/656 nm (0.5:1:2:1), object at infinity (1000 m); glass aspheres
+departure <= 0.5 mm. Experiment: lenses/novel/README.md.
+Numbers (lens-render numbers, f/2, infinity): RMS 7.5 / 14.4 / 14.8 um at
+0 / 0.7 / 1.0 field (flat 440-660 nm: 8.3 / 13.5 / 16.2), distortion +0.99 %,
+corner illumination 0.38, length 55.7 mm, back focus 29.6 mm. At 2.5 m:
+8.4 / 15.7 / 17.0 um."""
+output = "glass-triplet-f2.lens"
+fstop = 2.0
+focus = 1000
+efl = 50
+fields = [0.0, 0.3, 0.5, 0.7, 0.85, 1.0]
+field_weights = [1, 1, 1, 1, 1, 1]
+wavelengths = [[440, 0.5], [486.13, 1], [546.07, 2], [656.27, 1]]
+vignetting = 0.5
+max_distortion = 1.0
+min_corner_illumination = 0.36
+max_length = 90
+min_back_focus = 20
+max_departure = 0.5
+max_departure_slope = 0.1
+max_inflections = 2
+iterations = 150
+
+curvatures = [1, 2, 4, 5, 6, 7]
+thicknesses = [1, 2, 3, 4, 5, 6]
+conics = [1, 2, 4, 5, 6, 7]
+aspheres = [1, 2, 4, 5, 6, 7]
+asphere_orders = [4, 6, 8, 10]
+start = """
+  16.9858     8.4135      S-LAH65V       12.690 k=-0.002039 a4=2.483037e-6 a6=-9.559550e-9 a8=1.693475e-11 a10=4.245039e-13
+  150.1043    0.5034      air            12.540 k=131.206425 a4=4.125410e-6 a6=2.131280e-8 a8=3.959453e-10 a10=-4.221484e-12
+  stop        0.6178      air            9.470
+  246.0519    1.8785      N-SF11         9.730 k=-2284.646325 a4=3.691715e-5 a6=1.843033e-8 a8=-7.271446e-10 a10=-1.224839e-12
+  14.0880     6.3344      air            7.290 k=1.099479 a4=1.923669e-5 a6=2.002571e-7 a8=4.193391e-10 a10=-3.957477e-11
+  -2196.4526  8.3973      S-LAH55V       8.830 k=-6687.596991 a4=4.609308e-6 a6=2.064668e-7 a8=-7.378716e-10 a10=2.494542e-11
+  -39.3349    38.0000     air            9.070 k=2.237104 a4=-2.442789e-6 a6=1.751729e-8 a8=-4.352544e-10 a10=6.884429e-12
+"""
+
+[[material_limits]]
+glass = "DIAMOND"
+max_thickness = 6
+max_departure = 0.05
+
+[global]
+restarts = 24
+keep = 1
+seed = 3
+perturb = 0.15
+asphere_perturb = 0.01
+hops = 1
+
