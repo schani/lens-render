@@ -8,6 +8,10 @@ imperfections because they emerge from the optics, not from post effects.
 
 *Demo video (90 s, narrated): click the image.*
 
+[![Explainer: why does a sharp picture take six pieces of glass?](docs/explainer.jpg)](docs/lens-design-explainer.mp4)
+
+*Explainer (6.5 min, narrated): lens design from one element to the double Gauss, all simulated. Click the image.*
+
 Lenses (select with e.g. `--set lens=../lenses/double-gauss.lens`):
 
 - `cooke-triplet.lens`: 50 mm f/3.5 Cooke triplet.
