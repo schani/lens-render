@@ -70,7 +70,6 @@ triplet_f2 = { file = "lenses/explainer/08-triplet-f2.lens", label = "Triplet re
 clark = { file = "lenses/explainer/09-clark.lens", label = "Clark (1888)" }
 planar = { file = "lenses/explainer/10-planar.lens", label = "Planar (Rudolph, 1896)" }
 dgauss = { file = "lenses/explainer/11b-double-gauss.lens", label = "Double Gauss" }
-summilux = { file = "lenses/summilux-50-asph.lens", label = "Leica Summilux-M 50 f/1.4 ASPH (reconstruction)" }
 
 # ---------------------------------------------------------------- 0 Hook
 [[chapter]]
@@ -936,7 +935,8 @@ Six elements, sharp from center to corner at f/2: sixteen times faster than the 
 Nearly every fast fifty since is built on it."""
 lens = "dgauss"
 fstop = 2
-tail = 1.6
+# The last chapter: time to take it in.
+tail = 4.0
 tool = "break the symmetry"
 
 [[chapter.tag]]
@@ -959,20 +959,3 @@ on = "hud"
 shape = "box"
 pos = [0.625, 0.5]
 r = [0.12, 0.42]
-
-# ---------------------------------------------------------------- 17 Outro
-[[chapter]]
-id = "outro"
-title = "Leica Summilux-M 50 f/1.4 ASPH"
-narration = """Add aspherical surfaces and exotic glasses, and you get lenses like this Summilux, at f/1.4.
-Same ideas, finer tuning."""
-tail = 4.0
-
-[[chapter.key]]
-at = "@Summilux-0.3"
-dur = 0
-lens = "summilux"
-fstop = 1.4
-# Its 52 mm puts the corner stars at the frame edge; show the corner light.
-corner = [0.085, 0.92]
-corner_label = "corner light"
